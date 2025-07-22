@@ -2,9 +2,6 @@ apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
 name: Main workflow
 on:
-  push:
-    branches:
-      - "**"
   workflow_dispatch:
 permissions:
   scm-token-own: read
@@ -14,7 +11,6 @@ env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
 jobs:
-  # Nouveau job pour la construction de l'application Node.js
   build-app:
     steps:
       - uses: cloudbees-io/checkout@v1
@@ -29,23 +25,12 @@ jobs:
         if: ${{ failure() }}
         uses: docker://curlimages/curl:latest
         run: |
-          PAYLOAD=$(cat <<EOF
-          {
-            "job": "${{ cloudbees.workflow.name }}",
-            "build": "${{ cloudbees.run.id }}",
-            "result": "FAILURE",
-            "buildUrl": "${{ cloudbees.run.url }}",
-            "consoleUrl": "${{ cloudbees.run.url }}",
-            "timestamp": "$(date -u +"%Y-%m-%d %H:%M:%S")",
-            "failedStep": "Node.js Build"
-          }
-          EOF
-          )
-          
+          PAYLOAD="{\"job\":\"Main workflow\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"$(date -u +\"%Y-%m-%d %H:%M:%S\")\",\"failedStep\":\"Node.js Build\"}"
+
           echo "Envoi du payload webhook: ${PAYLOAD}"
-          
+
           curl -X POST \
             -H "Content-Type: application/json" \
             -d "${PAYLOAD}" \
             --connect-timeout 30 \
-            https://still-ee-asp.ngrok-free.app/webhook/ci-failure
+            https://still-elegant-asp.ngrok-free.app/webhook/ci-failure

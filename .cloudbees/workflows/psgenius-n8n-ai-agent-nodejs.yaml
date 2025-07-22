@@ -1,6 +1,6 @@
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
-name: Main workflow
+name: psgenius-n8n-ai-agent-nodejs
 on:
   workflow_dispatch:
 permissions:
@@ -25,7 +25,10 @@ jobs:
         if: ${{ failure() }}
         uses: docker://curlimages/curl:latest
         run: |
-          PAYLOAD="{\"job\":\"Main workflow\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"$(date -u +\"%Y-%m-%d %H:%M:%S\")\",\"failedStep\":\"Node.js Build\"}"
+          # Utiliser un format simple sans guillemets
+          TIMESTAMP=$(date -u +%Y-%m-%d_%H:%M:%S)
+
+          PAYLOAD="{\"job\":\"Main workflow\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"${TIMESTAMP}\",\"failedStep\":\"Node.js Build\"}"
 
           echo "Envoi du payload webhook: ${PAYLOAD}"
 

@@ -21,16 +21,13 @@ jobs:
           echo "Workflow ID: ${{ cloudbees.run_id }}" >> ${{ env.LOG_FILE }}
           echo "Workflow Name: psgenius-n8n-ai-agent-nodejs" >> ${{ env.LOG_FILE }}
       
-      - name: Checkout with logs
-        uses: cloudbees-io/checkout@v1
-        id: checkout
-        continue-on-error: true
+      - uses: cloudbees-io/checkout@v1
+        name: Get source code
       
-      - name: Capture checkout logs
+      - name: Capture repository info
         uses: docker://alpine:latest
         run: |
-          echo -e "\n=== CHECKOUT STEP LOGS ===" >> ${{ env.LOG_FILE }}
-          echo "Checkout status: ${{ steps.checkout.outcome }}" >> ${{ env.LOG_FILE }}
+          echo -e "\n=== REPOSITORY INFO ===" >> ${{ env.LOG_FILE }}
           
           # Vérifier et enregistrer les informations Git si disponibles
           if [ -d "/cloudbees/workspace/.git" ]; then
@@ -40,14 +37,17 @@ jobs:
             git log -1 --pretty=full >> ${{ env.LOG_FILE }} 2>&1
             echo "Git status:" >> ${{ env.LOG_FILE }}
             git status >> ${{ env.LOG_FILE }} 2>&1
+            echo "Repository contents:" >> ${{ env.LOG_FILE }}
+            ls -la >> ${{ env.LOG_FILE }} 2>&1
           else
             echo "Repository checkout may have failed or .git directory is not available" >> ${{ env.LOG_FILE }}
+            echo "Contents of workspace:" >> ${{ env.LOG_FILE }}
+            ls -la /cloudbees/workspace >> ${{ env.LOG_FILE }} 2>&1
           fi
       
       - name: Build Node.js application with logs
         id: BuildNodeApp
         uses: docker://node:lts
-        continue-on-error: true
         run: |
           # Ajouter l'en-tête pour cette étape dans le fichier de log
           echo -e "\n=== BUILD STEP STARTED AT $(date) ===" >> ${{ env.LOG_FILE }}
@@ -83,8 +83,8 @@ jobs:
             exit $BUILD_RESULT
           fi
       
-      - name: Check build status and send notification
-        if: ${{ steps.BuildNodeApp.outcome == 'failure' }}
+      - name: Send notification with logs
+        if: ${{ failure() }}
         uses: docker://alpine:latest
         run: |
           # Installer curl et jq
@@ -92,7 +92,6 @@ jobs:
           
           # Finaliser le fichier de log
           echo -e "\n=== WORKFLOW FAILED AT $(date) ===" >> ${{ env.LOG_FILE }}
-          echo "Build step outcome: ${{ steps.BuildNodeApp.outcome }}" >> ${{ env.LOG_FILE }}
           
           # Lire le fichier de log complet
           LOGS=$(cat ${{ env.LOG_FILE }})

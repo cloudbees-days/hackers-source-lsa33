@@ -10,53 +10,94 @@ permissions:
 env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
+  LOG_FILE: /cloudbees/workspace/complete_workflow_logs.txt
 jobs:
   build-app:
     steps:
-      - uses: cloudbees-io/checkout@v1
-        name: Get source code
+      - name: Initialize log file
+        uses: docker://alpine:latest
+        run: |
+          echo "=== WORKFLOW STARTED AT $(date) ===" > ${{ env.LOG_FILE }}
+          echo "Workflow ID: ${{ cloudbees.run_id }}" >> ${{ env.LOG_FILE }}
+          echo "Workflow Name: psgenius-n8n-ai-agent-nodejs" >> ${{ env.LOG_FILE }}
       
-      - name: Build Node.js application and capture logs
+      - name: Checkout with logs
+        uses: cloudbees-io/checkout@v1
+        id: checkout
+        continue-on-error: true
+      
+      - name: Capture checkout logs
+        uses: docker://alpine:latest
+        run: |
+          echo -e "\n=== CHECKOUT STEP LOGS ===" >> ${{ env.LOG_FILE }}
+          echo "Checkout status: ${{ steps.checkout.outcome }}" >> ${{ env.LOG_FILE }}
+          
+          # Vérifier et enregistrer les informations Git si disponibles
+          if [ -d "/cloudbees/workspace/.git" ]; then
+            echo "Repository successfully checked out" >> ${{ env.LOG_FILE }}
+            apk add --no-cache git
+            echo "Git commit information:" >> ${{ env.LOG_FILE }}
+            git log -1 --pretty=full >> ${{ env.LOG_FILE }} 2>&1
+            echo "Git status:" >> ${{ env.LOG_FILE }}
+            git status >> ${{ env.LOG_FILE }} 2>&1
+          else
+            echo "Repository checkout may have failed or .git directory is not available" >> ${{ env.LOG_FILE }}
+          fi
+      
+      - name: Build Node.js application with logs
         id: BuildNodeApp
         uses: docker://node:lts
+        continue-on-error: true
         run: |
-          # Exécuter les commandes et capturer tous les logs dans un fichier
-          {
-            echo "=== BUILD STARTED AT $(date) ==="
-            echo "Node version: $(node -v)"
-            echo "NPM version: $(npm -v)"
-            echo "=== NPM INSTALL ==="
-            npm ci
-            echo "=== NPM BUILD ==="
-            npm run build
-          } 2>&1 | tee /cloudbees/workspace/build_logs.txt
+          # Ajouter l'en-tête pour cette étape dans le fichier de log
+          echo -e "\n=== BUILD STEP STARTED AT $(date) ===" >> ${{ env.LOG_FILE }}
+          echo "Node version: $(node -v)" >> ${{ env.LOG_FILE }}
+          echo "NPM version: $(npm -v)" >> ${{ env.LOG_FILE }}
           
-          # Conserver le code de sortie pour déterminer si le build a réussi
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
-          exit $BUILD_EXIT_CODE
+          # Enregistrer le contenu du package.json
+          echo -e "\n=== PACKAGE.JSON CONTENT ===" >> ${{ env.LOG_FILE }}
+          cat package.json >> ${{ env.LOG_FILE }} 2>&1
+          
+          # Exécuter npm ci avec logs
+          echo -e "\n=== NPM INSTALL (npm ci) ===" >> ${{ env.LOG_FILE }}
+          npm ci >> ${{ env.LOG_FILE }} 2>&1
+          NPM_CI_RESULT=$?
+          echo "npm ci exit code: $NPM_CI_RESULT" >> ${{ env.LOG_FILE }}
+          
+          # Exécuter npm build avec logs
+          echo -e "\n=== NPM BUILD (npm run build) ===" >> ${{ env.LOG_FILE }}
+          npm run build >> ${{ env.LOG_FILE }} 2>&1
+          BUILD_RESULT=$?
+          echo "npm run build exit code: $BUILD_RESULT" >> ${{ env.LOG_FILE }}
+          
+          # Si le build a échoué, enregistrer le contenu du fichier problématique
+          if [ $BUILD_RESULT -ne 0 ] && [ -f "/cloudbees/workspace/src/main.js" ]; then
+            echo -e "\n=== PROBLEMATIC FILE CONTENT (src/main.js) ===" >> ${{ env.LOG_FILE }}
+            cat /cloudbees/workspace/src/main.js >> ${{ env.LOG_FILE }} 2>&1
+          fi
+          
+          # Sortir avec le code d'erreur approprié
+          if [ $NPM_CI_RESULT -ne 0 ]; then
+            exit $NPM_CI_RESULT
+          else
+            exit $BUILD_RESULT
+          fi
       
-      - name: Send failure notification with logs
-        if: ${{ failure() }}
+      - name: Check build status and send notification
+        if: ${{ steps.BuildNodeApp.outcome == 'failure' }}
         uses: docker://alpine:latest
         run: |
           # Installer curl et jq
           apk add --no-cache curl jq
           
-          # Récupérer les logs capturés à l'étape précédente
-          if [ -f "/cloudbees/workspace/build_logs.txt" ]; then
-            LOGS=$(cat /cloudbees/workspace/build_logs.txt)
-          else
-            LOGS="Logs non disponibles"
-          fi
+          # Finaliser le fichier de log
+          echo -e "\n=== WORKFLOW FAILED AT $(date) ===" >> ${{ env.LOG_FILE }}
+          echo "Build step outcome: ${{ steps.BuildNodeApp.outcome }}" >> ${{ env.LOG_FILE }}
           
-          # Afficher les informations du fichier problématique
-          if [ -f "/cloudbees/workspace/src/main.js" ]; then
-            echo "Contenu du fichier source problématique:"
-            cat /cloudbees/workspace/src/main.js
-            LOGS="${LOGS}\n\n=== PROBLEMATIC FILE CONTENT ===\n$(cat /cloudbees/workspace/src/main.js)"
-          fi
+          # Lire le fichier de log complet
+          LOGS=$(cat ${{ env.LOG_FILE }})
           
-          # Créer le payload avec les logs
+          # Créer le payload avec les logs complets
           jq -n \
             --arg job "psgenius-n8n-ai-agent-nodejs" \
             --arg build "${{ cloudbees.run_id }}" \
@@ -66,7 +107,7 @@ jobs:
             --arg logs "$LOGS" \
             '{job: $job, build: $build, result: $result, timestamp: $timestamp, failedStep: $step, buildLogs: $logs}' > /tmp/payload.json
           
-          echo "Envoi du payload webhook avec logs..."
+          echo "Envoi du payload webhook avec logs complets..."
           
           curl -X POST \
             -H "Content-Type: application/json" \

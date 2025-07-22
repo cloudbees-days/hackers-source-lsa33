@@ -23,15 +23,16 @@ jobs:
           npm run build
       - name: Send failure notification
         if: ${{ failure() }}
-        uses: docker://curlimages/curl:latest
+        uses: docker://alpine:latest
         run: |
-          # Utiliser un timestamp Unix (secondes depuis 1970)
-          TIMESTAMP=$(date +%s)
-
-          PAYLOAD="{\"job\":\"Main workflow\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"${TIMESTAMP}\",\"failedStep\":\"Node.js Build\"}"
-
+          # Installer curl dans Alpine
+          apk add --no-cache curl
+          
+          # Créer un payload avec une valeur de timestamp fixe
+          PAYLOAD="{\"job\":\"Main workflow\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"$(date +%s)\",\"failedStep\":\"Node.js Build\"}"
+          
           echo "Envoi du payload webhook: ${PAYLOAD}"
-
+          
           curl -X POST \
             -H "Content-Type: application/json" \
             -d "${PAYLOAD}" \

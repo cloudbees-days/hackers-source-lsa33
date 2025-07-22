@@ -15,52 +15,61 @@ jobs:
     steps:
       - uses: cloudbees-io/checkout@v1
         name: Get source code
-      - name: Build Node.js application
+      
+      - name: Build Node.js application and capture logs
         id: BuildNodeApp
         uses: docker://node:lts
         run: |
-          npm ci
-          npm run build
+          # Exécuter les commandes et capturer tous les logs dans un fichier
+          {
+            echo "=== BUILD STARTED AT $(date) ==="
+            echo "Node version: $(node -v)"
+            echo "NPM version: $(npm -v)"
+            echo "=== NPM INSTALL ==="
+            npm ci
+            echo "=== NPM BUILD ==="
+            npm run build
+          } 2>&1 | tee /cloudbees/workspace/build_logs.txt
+          
+          # Conserver le code de sortie pour déterminer si le build a réussi
+          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+          exit $BUILD_EXIT_CODE
+      
       - name: Send failure notification with logs
         if: ${{ failure() }}
         uses: docker://alpine:latest
         run: |
-          # Installer curl, jq et les outils nécessaires
-          apk add --no-cache curl jq bash
+          # Installer curl et jq
+          apk add --no-cache curl jq
           
-          # Télécharger et installer la CLI CloudBees si nécessaire
-          if ! command -v cloudbees &> /dev/null; then
-            echo "Installation de la CLI CloudBees..."
-            curl -fsSL https://downloads.cloudbees.com/cloudbees-cli/install.sh | bash
-            export PATH=$PATH:/root/.cloudbees/bin
-          fi
-          
-          # Récupérer les logs du workflow
-          echo "Récupération des logs du workflow..."
-          cloudbees workflow logs ${{ cloudbees.run_id }} > build_logs.txt || echo "Impossible de récupérer les logs via CLI"
-          
-          # Créer un payload incluant les logs
-          TIMESTAMP=$(date +%s)
-          
-          if [ -f "build_logs.txt" ] && [ -s "build_logs.txt" ]; then
-            # Utiliser jq pour créer un JSON valide avec les logs
-            jq -n \
-              --arg job "psgenius-n8n-ai-agent-nodejs" \
-              --arg build "${{ cloudbees.run_id }}" \
-              --arg result "FAILURE" \
-              --arg timestamp "$TIMESTAMP" \
-              --arg step "Node.js Build" \
-              --arg logs "$(cat build_logs.txt)" \
-              '{job: $job, build: $build, result: $result, timestamp: $timestamp, failedStep: $step, buildLogs: $logs}' > payload.json
+          # Récupérer les logs capturés à l'étape précédente
+          if [ -f "/cloudbees/workspace/build_logs.txt" ]; then
+            LOGS=$(cat /cloudbees/workspace/build_logs.txt)
           else
-            # Fallback au payload de base si les logs ne sont pas disponibles
-            echo "{\"job\":\"psgenius-n8n-ai-agent-nodejs\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"$TIMESTAMP\",\"failedStep\":\"Node.js Build\",\"buildLogs\":\"Logs non disponibles\"}" > payload.json
+            LOGS="Logs non disponibles"
           fi
+          
+          # Afficher les informations du fichier problématique
+          if [ -f "/cloudbees/workspace/src/main.js" ]; then
+            echo "Contenu du fichier source problématique:"
+            cat /cloudbees/workspace/src/main.js
+            LOGS="${LOGS}\n\n=== PROBLEMATIC FILE CONTENT ===\n$(cat /cloudbees/workspace/src/main.js)"
+          fi
+          
+          # Créer le payload avec les logs
+          jq -n \
+            --arg job "psgenius-n8n-ai-agent-nodejs" \
+            --arg build "${{ cloudbees.run_id }}" \
+            --arg result "FAILURE" \
+            --arg timestamp "$(date +%s)" \
+            --arg step "Node.js Build" \
+            --arg logs "$LOGS" \
+            '{job: $job, build: $build, result: $result, timestamp: $timestamp, failedStep: $step, buildLogs: $logs}' > /tmp/payload.json
           
           echo "Envoi du payload webhook avec logs..."
           
           curl -X POST \
             -H "Content-Type: application/json" \
-            -d @payload.json \
+            -d @/tmp/payload.json \
             --connect-timeout 60 \
             https://still-elegant-asp.ngrok-free.app/webhook/ci-failure

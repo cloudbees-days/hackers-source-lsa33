@@ -1,0 +1,47 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: PSGenius-N8N-AI-Agent-NODEJS
+on:
+  workflow_dispatch:
+permissions:
+  scm-token-own: read
+  scm-token-org: read
+  id-token: write
+env:
+  APP_NAME: hackers-organized
+  NAMESPACE: lsa33
+jobs:
+  build-app:
+    steps:
+      - uses: cloudbees-io/checkout@v1
+        name: Get source code
+      - name: Build Node.js application
+        id: BuildNodeApp
+        uses: docker://node:lts
+        run: |
+          npm ci
+          npm run build
+      - name: Send failure notification
+        if: ${{ failure() && steps.BuildNodeApp.conclusion == 'failure' }}
+        uses: docker://curlimages/curl:latest
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "job": "${{ cloudbees.workflow.name }}",
+            "build": "${{ cloudbees.run.id }}",
+            "result": "FAILURE",
+            "buildUrl": "${{ cloudbees.run.url }}",
+            "consoleUrl": "${{ cloudbees.run.url }}",
+            "timestamp": "$(date -u +"%Y-%m-%d %H:%M:%S")",
+            "failedStep": "Node.js Build"
+          }
+          EOF
+          )
+
+          echo "Envoi du payload webhook: ${PAYLOAD}"
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            --connect-timeout 30 \
+            https://still-elegant-asp.ngrok-free.app/webhook/ci-failure

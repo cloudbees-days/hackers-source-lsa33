@@ -70,28 +70,34 @@ jobs:
 
       - name: Send raw logs to n8n
         if: always()
-        uses: docker://curlimages/curl:latest
+        uses: docker://alpine:latest
         run: |
+          # Installer curl et jq
+          apk add --no-cache curl jq
+          
           # Vérifier si le fichier de log existe
           LOG_FILE="/cloudbees/workspace/full_build.log"
           if [ -f "$LOG_FILE" ]; then
-            # Créer le payload
-            LOG_CONTENT=$(cat "$LOG_FILE" | sed 's/"/\\"/g' | tr '\n' '\\n')
-            PAYLOAD="{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs\":\"$LOG_CONTENT\"}"
+            # Utiliser jq pour échapper correctement les logs
+            LOG_CONTENT=$(<"$LOG_FILE" jq -Rs .)
+            jq -n \
+              --arg run_id "${{ cloudbees.run_id }}" \
+              --arg status "failure" \
+              --arg logs "$LOG_CONTENT" \
+              '{run_id: $run_id, status: $status, logs: $logs}' > /tmp/payload.json
             
             # Afficher la taille du payload
-            echo "Payload size: ${#PAYLOAD} bytes"
+            echo "Payload size: $(wc -c < /tmp/payload.json) bytes"
             
             # Envoyer au webhook
             curl -X POST \
               -H "Content-Type: application/json" \
-              -d "$PAYLOAD" \
+              -d @/tmp/payload.json \
               "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"
           else
-            echo "Log file not found at $LOG_FILE"
-            PAYLOAD="{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs\":\"Log file not found\"}"
+            echo "{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs\":\"Log file not found\"}" > /tmp/payload.json
             curl -X POST \
               -H "Content-Type: application/json" \
-              -d "$PAYLOAD" \
+              -d @/tmp/payload.json \
               "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"
           fi

@@ -25,8 +25,8 @@ jobs:
         if: ${{ failure() }}
         uses: docker://curlimages/curl:latest
         run: |
-          # Utiliser un format simple sans guillemets
-          TIMESTAMP=$(date -u +%Y-%m-%d_%H:%M:%S)
+          # Utiliser un timestamp Unix (secondes depuis 1970)
+          TIMESTAMP=$(date +%s)
 
           PAYLOAD="{\"job\":\"Main workflow\",\"build\":\"${{ cloudbees.run_id }}\",\"result\":\"FAILURE\",\"timestamp\":\"${TIMESTAMP}\",\"failedStep\":\"Node.js Build\"}"
 

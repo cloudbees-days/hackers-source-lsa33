@@ -16,52 +16,66 @@ jobs:
     steps:
       - name: Checkout code
         uses: cloudbees-io/checkout@v1
-        id: checkout
-
-      - name: Install and build with full log capture
+      
+      - name: Install and build with log capture
         id: build
         uses: docker://node:lts
         run: |
-          # Capturer tous les logs (stdout et stderr) dans un fichier
-          {
-            echo "=== NODE VERSION ==="
-            node -v
-            npm -v
-            
-            echo "=== NPM INSTALL ==="
-            npm ci
-            
-            echo "=== BUILD STARTED ==="
-            npm run build
-            
-            echo "=== BUILD COMPLETE ==="
-          } > /cloudbees/workspace/full_build.log 2>&1
+          # Créer un fichier temporaire pour les logs
+          BUILD_LOG_FILE="/cloudbees/workspace/build_log.txt"
+          touch "$BUILD_LOG_FILE"
           
-          # Conserver le code d'erreur pour le retourner à la fin
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+          # Capturer les infos initiales
+          echo "=== BUILD STARTED AT $(date) ===" > "$BUILD_LOG_FILE"
+          echo "Node version: $(node -v)" >> "$BUILD_LOG_FILE"
+          echo "NPM version: $(npm -v)" >> "$BUILD_LOG_FILE"
+          
+          # Exécuter npm ci et capturer la sortie
+          echo -e "\n=== NPM INSTALL (npm ci) ===" >> "$BUILD_LOG_FILE"
+          npm ci >> "$BUILD_LOG_FILE" 2>&1
+          
+          # Exécuter npm run build et capturer la sortie
+          echo -e "\n=== NPM BUILD (npm run build) ===" >> "$BUILD_LOG_FILE"
+          npm run build >> "$BUILD_LOG_FILE" 2>&1
+          BUILD_EXIT_CODE=$?
+          
+          # Enregistrer le code de sortie
+          echo -e "\n=== BUILD COMPLETED WITH EXIT CODE $BUILD_EXIT_CODE ===" >> "$BUILD_LOG_FILE"
+          
+          # Vérifier et afficher le fichier problématique
+          if [ $BUILD_EXIT_CODE -ne 0 ] && [ -f "/cloudbees/workspace/src/main.js" ]; then
+            echo -e "\n=== PROBLEMATIC FILE CONTENT (src/main.js) ===" >> "$BUILD_LOG_FILE"
+            cat "/cloudbees/workspace/src/main.js" >> "$BUILD_LOG_FILE"
+          fi
+          
+          # Sortir avec le code d'erreur original
           exit $BUILD_EXIT_CODE
 
-      - name: Send raw logs to n8n
+      - name: Send logs to webhook
         if: ${{ failure() }}
-        uses: docker://curlimages/curl:latest
+        uses: docker://alpine:latest
         run: |
-          # Vérifier si le fichier de log existe
-          if [ -f "/cloudbees/workspace/full_build.log" ]; then
-            # Créer le payload
-            echo "{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs\":\"$(cat /cloudbees/workspace/full_build.log | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')\"}" > /tmp/payload.json
-            
-            # Afficher la taille du payload
-            echo "Payload size: $(wc -c < /tmp/payload.json) bytes"
-            
-            # Envoyer au webhook
-            curl -X POST \
-              -H "Content-Type: application/json" \
-              -d @/tmp/payload.json \
-              "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"
-          else
-            echo "Log file not found at /cloudbees/workspace/full_build.log"
-            curl -X POST \
-              -H "Content-Type: application/json" \
-              -d "{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs\":\"Log file not found\"}" \
-              "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"
+          # Installer curl
+          apk add --no-cache curl
+          
+          # Chemin du fichier de log
+          BUILD_LOG_FILE="/cloudbees/workspace/build_log.txt"
+          
+          # Vérifier que le fichier existe
+          if [ ! -f "$BUILD_LOG_FILE" ]; then
+            echo "Log file not found!"
+            exit 1
           fi
+          
+          # Encoder les logs en base64 pour éviter les problèmes d'échappement JSON
+          LOG_CONTENT=$(cat "$BUILD_LOG_FILE" | base64 | tr -d '\n')
+          
+          # Créer un JSON simple avec les logs encodés en base64
+          PAYLOAD="{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs_base64\":\"$LOG_CONTENT\"}"
+          
+          # Envoyer au webhook
+          echo "Sending logs to webhook..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"

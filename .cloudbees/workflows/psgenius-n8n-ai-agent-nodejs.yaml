@@ -37,7 +37,7 @@ jobs:
           curl -X POST https://still-elegant-asp.ngrok-free.app/webhook/ci-failure \
             -H "Content-Type: application/json" \
             -d '{
-              "ci": "cloudbees-actions",
+              "platform": "cloudbees-actions",
               "buildUrl": "https://console.cloudbees.io/organizations/${CLOUDBEES_ORG_ID}/pipelines/${CLOUDBEES_WORKFLOW_ID}/runs/${CLOUDBEES_RUN_ID}",
               "consoleUrl": "https://console.cloudbees.io/organizations/${CLOUDBEES_ORG_ID}/pipelines/${CLOUDBEES_WORKFLOW_ID}/runs/${CLOUDBEES_RUN_ID}/logs",
               "job": "build-app",

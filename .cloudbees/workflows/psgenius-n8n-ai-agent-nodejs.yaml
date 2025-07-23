@@ -1,12 +1,15 @@
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
 name: psgenius-n8n-ai-agent-nodejs
+
 on:
   workflow_dispatch:
+
 permissions:
   scm-token-own: read
   scm-token-org: read
   id-token: write
+
 env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
@@ -14,90 +17,29 @@ env:
 jobs:
   build-app:
     steps:
-      - name: Initialize log file
-        uses: docker://alpine:latest
-        run: |
-          # Initialiser le fichier de log
-          LOG_FILE="/cloudbees/workspace/full_build.log"
-          touch "$LOG_FILE"
-          echo "=== WORKFLOW STARTED AT $(date) ===" > "$LOG_FILE"
-          echo "Workflow ID: ${{ cloudbees.run_id }}" >> "$LOG_FILE"
-          echo "Workflow Name: psgenius-n8n-ai-agent-nodejs" >> "$LOG_FILE"
-          
       - name: Checkout code
         uses: cloudbees-io/checkout@v1
         with:
           fetch-depth: 1
-        id: checkout
-        continue-on-error: true
-      - name: Log Checkout Details
-        uses: docker://alpine:latest
-        run: |
-          LOG_FILE="/cloudbees/workspace/full_build.log"
-          echo "=== CHECKOUT DETAILS ===" >> "$LOG_FILE"
-          if [ -d "/cloudbees/workspace/.git" ]; then
-            echo "Git repository successfully checked out." >> "$LOG_FILE"
-            apk add --no-cache git
-            git remote -v >> "$LOG_FILE" 2>&1
-            git log -1 >> "$LOG_FILE" 2>&1
-          else
-            echo "Checkout may have failed - .git directory not found." >> "$LOG_FILE"
-          fi
 
-      - name: Install and build with full log capture
-        id: build
+      - name: Install and build
         uses: docker://node:lts
         run: |
-          LOG_FILE="/cloudbees/workspace/full_build.log"
-          # Capturer tous les logs (stdout et stderr) dans le fichier log
-          {
-            echo "=== NODE VERSION ==="
-            node -v
-            npm -v
-            
-            echo "=== NPM INSTALL ==="
-            npm ci
-            
-            echo "=== BUILD STARTED ==="
-            npm run build
-            
-            echo "=== BUILD COMPLETE ==="
-          } >> "$LOG_FILE" 2>&1
-          
-          # Conserver le code d'erreur pour la fin
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
-          exit $BUILD_EXIT_CODE
+          node -v
+          npm ci
+          npm run build
 
-      - name: Send raw logs to n8n
-        if: always()
+      - name: Notify n8n on failure
+        if: failure()
         uses: docker://alpine:latest
         run: |
-          # Installer curl et jq
-          apk add --no-cache curl jq
-          
-          # Vérifier si le fichier de log existe
-          LOG_FILE="/cloudbees/workspace/full_build.log"
-          if [ -f "$LOG_FILE" ]; then
-            # Utiliser jq pour échapper correctement les logs
-            LOG_CONTENT=$(<"$LOG_FILE" jq -Rs .)
-            jq -n \
-              --arg run_id "${{ cloudbees.run_id }}" \
-              --arg status "failure" \
-              --arg logs "$LOG_CONTENT" \
-              '{run_id: $run_id, status: $status, logs: $logs}' > /tmp/payload.json
-            
-            # Afficher la taille du payload
-            echo "Payload size: $(wc -c < /tmp/payload.json) bytes"
-            
-            # Envoyer au webhook
-            curl -X POST \
-              -H "Content-Type: application/json" \
-              -d @/tmp/payload.json \
-              "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"
-          else
-            echo "{\"run_id\":\"${{ cloudbees.run_id }}\",\"status\":\"failure\",\"logs\":\"Log file not found\"}" > /tmp/payload.json
-            curl -X POST \
-              -H "Content-Type: application/json" \
-              -d @/tmp/payload.json \
-              "https://still-elegant-asp.ngrok-free.app/webhook/ci-failure"
-          fi
+          apk add --no-cache curl
+          curl -X POST https://your-n8n-domain/webhook/ci-failure \
+            -H "Content-Type: application/json" \
+            -d '{
+              "ci": "cloudbees-actions",
+              "buildUrl": "https://console.cloudbees.io/organizations/${CLOUDBEES_ORG_ID}/pipelines/${CLOUDBEES_WORKFLOW_ID}/runs/${CLOUDBEES_RUN_ID}",
+              "consoleUrl": "https://console.cloudbees.io/organizations/${CLOUDBEES_ORG_ID}/pipelines/${CLOUDBEES_WORKFLOW_ID}/runs/${CLOUDBEES_RUN_ID}/logs",
+              "job": "build-app",
+              "buildNumber": "${CLOUDBEES_RUN_ID}"
+            }'

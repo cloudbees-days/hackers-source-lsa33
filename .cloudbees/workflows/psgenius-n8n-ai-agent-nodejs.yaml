@@ -34,12 +34,7 @@ jobs:
         uses: docker://alpine:latest
         run: |           
           apk add --no-cache curl
+          JSON_DATA=$(echo '{"platform":"cloudbees-actions","buildUrl":"'$CBA_BUILD_URL'","consoleUrl":"'$CBA_BUILD_URL'/logs","job":"'$CBA_JOB_NAME'","buildNumber":"'$CBA_RUN_ID'"}')
           curl -X POST https://still-elegant-asp.ngrok-free.app/webhook/ci-failure \
             -H "Content-Type: application/json" \
-            -d '{
-              "platform": "cloudbees-actions",
-              "buildUrl": "'${CBA_BUILD_URL}'",
-              "consoleUrl": "'${CBA_BUILD_URL}/logs'",
-              "job": "'${CBA_JOB_NAME}'",
-              "buildNumber": "'${CBA_RUN_ID}'"
-            }'
+            -d "$JSON_DATA"

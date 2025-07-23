@@ -32,14 +32,13 @@ jobs:
       - name: Send logs to n8n
         if: failure()
         uses: docker://alpine:latest
-        run: |
-          apk add --no-cache curl
-          curl -X POST https://your-n8n-domain/webhook/ci-failure \
+        run: |           
+          curl -X POST https://your-n8n/webhook/ci-failure \
             -H "Content-Type: application/json" \
             -d '{
-              "ci": "cloudbees-actions",
-              "buildUrl": "${{ cloudbees.run_url }}",
-              "consoleUrl": "${{ cloudbees.run_url }}/logs",
-              "job": "${{ cloudbees.workflow_name }}",
-              "buildNumber": "${{ cloudbees.run_id }}"
+              "platform": "cloudbees-actions",
+              "buildUrl": "'${CBA_BUILD_URL}'",
+              "consoleUrl": "'${CBA_BUILD_URL}/logs'",
+              "job": "'${CBA_JOB_NAME}'",
+              "buildNumber": "'${CBA_RUN_ID}'"
             }'

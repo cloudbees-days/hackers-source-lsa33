@@ -79,10 +79,9 @@ jobs:
         continue-on-error: true
         id: dockerconfig
         with:
-          registry: https://nexus.cloudbees.guru:8082
+          registry: nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
-          insecure-registry: "true"
 
       - name: Build container image
         uses: https://github.com/cloudbees-io/kaniko@v1
@@ -201,10 +200,9 @@ jobs:
       - name: Configure container registry credentials for deployment
         uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
         with:
-          registry: https://nexus.cloudbees.guru:8082
+          registry: nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
-          insecure-registry: "true"
 
       - name: Deploy to cluster
         uses: https://github.com/cloudbees-io/kustomize-deploy@v1

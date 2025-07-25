@@ -79,9 +79,10 @@ jobs:
         continue-on-error: true
         id: dockerconfig
         with:
-          registry: nexus.cloudbees.guru:8082
+          registry: https://nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
+          insecure-registry: "true"
 
       - name: Build container image
         uses: https://github.com/cloudbees-io/kaniko@v1
@@ -90,6 +91,7 @@ jobs:
           destination: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
           tar-path: container-image.tar
           build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
+          extra-args: "--insecure-registry=nexus.cloudbees.guru:8082"
 
       - name: Upload binary from container build
         uses: https://github.com/calculi-corp/assets-plugin-chain-utils/upload-binary@v1
@@ -199,9 +201,10 @@ jobs:
       - name: Configure container registry credentials for deployment
         uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
         with:
-          registry: nexus.cloudbees.guru:8082
+          registry: https://nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
+          insecure-registry: "true"
 
       - name: Deploy to cluster
         uses: https://github.com/cloudbees-io/kustomize-deploy@v1

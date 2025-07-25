@@ -70,14 +70,14 @@ jobs:
         continue-on-error: true
         id: dockerconfig
         with:
-          registry: nexus.cloudbees.guru:8081
+          registry: nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
       - uses: cloudbees-io/kaniko@v1
         name: Build container image
         kind: build
         with:
-          destination: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
+          destination: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
           tar-path: container-image.tar
           build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
       - uses: calculi-corp/assets-plugin-chain-utils/upload-binary@v1
@@ -180,7 +180,7 @@ jobs:
       - uses: cloudbees-io/configure-oci-credentials@v1
         name: Configure container registry credentials for deployment
         with:
-          registry: nexus.cloudbees.guru:8081
+          registry: nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
       - uses: cloudbees-io/kustomize-deploy@v1
@@ -189,7 +189,7 @@ jobs:
         with:
           kustomization-base-dir: ${{ cloudbees.workspace }}/k8s/base
           kustomization-overlays-dir: ${{ cloudbees.workspace }}/k8s/overlays/prod
-          environment-variables: "{\"IMAGE_NAME\":\"nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}\"}"
+          environment-variables: "{\"IMAGE_NAME\":\"nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}\"}"
       - name: Publish evidence
         uses: cloudbees-io/publish-evidence-item@v1
         with:
@@ -202,9 +202,9 @@ jobs:
       - name: Register_deployed_artifact
         uses: https://github.com/cloudbees-io/register-deployed-artifact@v1
         with:
-          name: "nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized"
+          name: "nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized"
           version: "${{ cloudbees.scm.sha }}"
-          url: "nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}"
+          url: "nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}"
           digest: ""
           target-environment: "DOW Production"
     needs:

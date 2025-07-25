@@ -74,28 +74,12 @@ jobs:
         kind: build
         continue-on-error: true
 
-      - name: Configure Docker for insecure registry
-        uses: docker://alpine:latest
-        run: |
-          # Create Docker config directory
-          mkdir -p ~/.docker
-          
-          # Create a config.json file that allows insecure registries
-          cat > ~/.docker/config.json << EOF
-          {
-            "insecure-registries": ["nexus.cloudbees.guru:8082"]
-          }
-          EOF
-          
-          # Display the configuration
-          cat ~/.docker/config.json
-
       - name: Configure container registry credentials
         uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
         continue-on-error: true
         id: dockerconfig
         with:
-          registry: http://nexus.cloudbees.guru:8082
+          registry: https://nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
 
@@ -212,26 +196,10 @@ jobs:
         with:
           secname: ${{ secrets.kubeconfig }}
 
-      - name: Configure Docker for insecure registry
-        uses: docker://alpine:latest
-        run: |
-          # Create Docker config directory
-          mkdir -p ~/.docker
-          
-          # Create a config.json file that allows insecure registries
-          cat > ~/.docker/config.json << EOF
-          {
-            "insecure-registries": ["nexus.cloudbees.guru:8082"]
-          }
-          EOF
-          
-          # Display the configuration
-          cat ~/.docker/config.json
-
       - name: Configure container registry credentials for deployment
         uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
         with:
-          registry: http://nexus.cloudbees.guru:8082
+          registry: https://nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
 

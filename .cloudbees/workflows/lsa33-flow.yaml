@@ -180,7 +180,7 @@ jobs:
         with:
           registry: https://nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/
           username: lsa26
-          password: ${{ secrets.NEXUS_PASSWORD }}
+          password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
       - uses: cloudbees-io/kustomize-deploy@v1
         name: Deploy to cluster
         kind: deploy

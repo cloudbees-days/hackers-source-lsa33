@@ -99,12 +99,11 @@ jobs:
           format: MARKDOWN
     needs: test
   scan:
-    # Modifié pour stocker les compteurs en variables de sortie directement
     outputs:
-      BLOCKER_COUNT: ${{ jobs.scan.outputs.blocker_count }}
-      CRITICAL_COUNT: ${{ jobs.scan.outputs.critical_count }}
-      MAJOR_COUNT: ${{ jobs.scan.outputs.major_count }}
-      MINOR_COUNT: ${{ jobs.scan.outputs.minor_count }}
+      BLOCKER_COUNT: ${{ steps.sonar_issues.outputs.blocker_count }}
+      CRITICAL_COUNT: ${{ steps.sonar_issues.outputs.critical_count }}
+      MAJOR_COUNT: ${{ steps.sonar_issues.outputs.major_count }}
+      MINOR_COUNT: ${{ steps.sonar_issues.outputs.minor_count }}
     steps:
       - name: Checkout
         uses: cloudbees-io/checkout@v1
@@ -152,10 +151,10 @@ jobs:
           MAJOR_COUNT=$(jq '[.issues[] | select(.severity=="MAJOR")] | length' sonar-issues.json)
           MINOR_COUNT=$(jq '[.issues[] | select(.severity=="MINOR")] | length' sonar-issues.json)
           
-          echo "BLOCKER_COUNT=${BLOCKER_COUNT}" >> $CLOUDBEES_OUTPUTS/blocker_count
-          echo "CRITICAL_COUNT=${CRITICAL_COUNT}" >> $CLOUDBEES_OUTPUTS/critical_count
-          echo "MAJOR_COUNT=${MAJOR_COUNT}" >> $CLOUDBEES_OUTPUTS/major_count
-          echo "MINOR_COUNT=${MINOR_COUNT}" >> $CLOUDBEES_OUTPUTS/minor_count
+          echo "${BLOCKER_COUNT}" >> $CLOUDBEES_OUTPUTS/blocker_count
+          echo "${CRITICAL_COUNT}" >> $CLOUDBEES_OUTPUTS/critical_count
+          echo "${MAJOR_COUNT}" >> $CLOUDBEES_OUTPUTS/major_count
+          echo "${MINOR_COUNT}" >> $CLOUDBEES_OUTPUTS/minor_count
       - name: Publish evidence
         uses: cloudbees-io/publish-evidence-item@v1
         with:
@@ -164,10 +163,10 @@ jobs:
 
             | Severity      | Issue Count |
             |---------------|-------------|
-            | BLOCKER       | ${{ jobs.scan.outputs.blocker_count }} |
-            | CRITICAL      | ${{ jobs.scan.outputs.critical_count }} |
-            | MAJOR         | ${{ jobs.scan.outputs.major_count }} |
-            | MINOR         | ${{ jobs.scan.outputs.minor_count }} |
+            | BLOCKER       | ${{ steps.sonar_issues.outputs.blocker_count }} |
+            | CRITICAL      | ${{ steps.sonar_issues.outputs.critical_count }} |
+            | MAJOR         | ${{ steps.sonar_issues.outputs.major_count }} |
+            | MINOR         | ${{ steps.sonar_issues.outputs.minor_count }} |
           format: MARKDOWN
   deploy:
     environment: DOW Production

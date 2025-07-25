@@ -1,30 +1,33 @@
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
-name: "lsa33-flow-"
+name: "lsa33-flow"
 on:
   push:
     branches:
       - "**"
   workflow_dispatch:
+
 permissions:
   scm-token-own: read
   scm-token-org: read
   id-token: write
+
 jobs:
   test:
     steps:
       - name: Run Jenkins Job
         kind: test
-        uses: cloudbees-io/jenkins-run-job@v2
+        uses: https://github.com/cloudbees-io/jenkins-run-job@v2
         continue-on-error: true
         with:
           url: https://sda.preview.cb-demos.io/westest/
           username: ${{ secrets.WES_JENKINS_USERNAME }}
           token: ${{ secrets.WES_JENKINS_TOKEN }}
           job-name: WesTestJob
+
       - name: Run GHA Workflow
         kind: test
-        uses: cloudbees-io/ghactions-run-workflow@v2
+        uses: https://github.com/cloudbees-io/ghactions-run-workflow@v2
         continue-on-error: true
         with:
           token: ${{ secrets.WES_GH_TOKEN }}
@@ -34,9 +37,11 @@ jobs:
           workflow-name: test-and-build-image
           test-type: JUnit
           test-result-location: junit.xml
+
       - name: Get source code
-        uses: cloudbees-io/checkout@v1
+        uses: https://github.com/cloudbees-io/checkout@v1
         continue-on-error: true
+
       - name: Run unit tests
         kind: test
         id: RunUnitTest
@@ -45,13 +50,15 @@ jobs:
           npm ci
           npm run test:unit
           npx jest --coverage >> $CLOUDBEES_OUTPUTS/CODE_COVERAGE
+
       - name: Publish test results
-        uses: cloudbees-io/publish-test-results@v1
+        uses: https://github.com/cloudbees-io/publish-test-results@v1
         with:
           test-type: JUnit
           folder-name: ${{ cloudbees.workspace }}/junit.xml
+
       - name: Publish evidence
-        uses: cloudbees-io/publish-evidence-item@v1
+        uses: https://github.com/cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
             ## Test code coverage
@@ -59,45 +66,50 @@ jobs:
           format: MARKDOWN
     outputs:
       CODE_COVERAGE: ${{ steps.RunUnitTest.outputs.CODE_COVERAGE }}
+
   build-container-image:
     steps:
-      - uses: cloudbees-io/checkout@v1
-        name: Get source code
+      - name: Get source code
+        uses: https://github.com/cloudbees-io/checkout@v1
         kind: build
         continue-on-error: true
-      - uses: cloudbees-io/configure-oci-credentials@v1
-        name: Configure container registry credentials
+
+      - name: Configure container registry credentials
+        uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
         continue-on-error: true
         id: dockerconfig
         with:
           registry: nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
-      - uses: cloudbees-io/kaniko@v1
-        name: Build container image
+
+      - name: Build container image
+        uses: https://github.com/cloudbees-io/kaniko@v1
         kind: build
         with:
           destination: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
           tar-path: container-image.tar
           build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
-      - uses: calculi-corp/assets-plugin-chain-utils/upload-binary@v1
-        name: Upload binary from container build
+
+      - name: Upload binary from container build
+        uses: https://github.com/calculi-corp/assets-plugin-chain-utils/upload-binary@v1
         continue-on-error: true
         id: upload-binary
         with:
           file-path: container-image.tar
           file-type: BINARY_CONTAINER
           debug: "true"
+
       - name: Publish evidence
-        uses: cloudbees-io/publish-evidence-item@v1
+        uses: https://github.com/cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
             ## Built and pushed image to Nexus Docker Repository
-
             Nexus repository: unify-docker-lsa26
             Deployed hackers-organized:${{ cloudbees.scm.sha }}
           format: MARKDOWN
     needs: test
+
   scan:
     outputs:
       BLOCKER_COUNT: ${{ steps.sonar_issues.outputs.blocker_count }}
@@ -106,46 +118,49 @@ jobs:
       MINOR_COUNT: ${{ steps.sonar_issues.outputs.minor_count }}
     steps:
       - name: Checkout
-        uses: cloudbees-io/checkout@v1
+        uses: https://github.com/cloudbees-io/checkout@v1
+
       - name: Get code coverage
         kind: test
         uses: docker://node:lts
         run: |
           npm ci
           npm run test:coverage
-      - uses: cloudbees-io/sonarqube-bundled-sast-scan-code@v1
-        name: Scan with SonarQube
+
+      - name: Scan with SonarQube
+        uses: https://github.com/cloudbees-io/sonarqube-bundled-sast-scan-code@v1
         kind: scan
         continue-on-error: true
         with:
           language: LANGUAGE_JS
           cover-file-name: coverage/clover.xml
           sonar-exclusion: tests/*
-      - uses: cloudbees-io/snyk-sast-scan-code@v1
-        name: Synk SAST
+
+      - name: Scan with Snyk SAST
+        uses: https://github.com/cloudbees-io/snyk-sast-scan-code@v1
         kind: scan
         continue-on-error: true
         with:
           orgname: ${{ secrets.SNYK_ORGNAME }}
           token: ${{ secrets.SNYK_TOKEN }}
           language: LANGUAGE_JS
+
       - name: Scan with Snyk SCA
-        uses: cloudbees-io/snyk-sca-scan-dependency@v1
+        uses: https://github.com/cloudbees-io/snyk-sca-scan-dependency@v1
         continue-on-error: true
         with:
           orgname: ${{ secrets.SNYK_ORGNAME }}
           token: ${{ secrets.SNYK_TOKEN }}
           language: LANGUAGE_JS
+
       - name: Fetch SonarQube Issues
         id: sonar_issues
         uses: docker://alpine/git:latest
         run: |
           apk add --no-cache curl jq
-          curl -u ${{ secrets.SONAR_USER }}:${{ secrets.SONAR_TOKEN }} \
-          "https://sonarqube.cb-demos.io/api/issues/search?componentKeys=HackersOrganized&severities=BLOCKER,CRITICAL,MAJOR,MINOR" \
-          -o sonar-issues.json
+          curl -u ${{ secrets.SONAR_USER }}:${{ secrets.SONAR_TOKEN }} "https://sonarqube.cb-demos.io/api/issues/search?componentKeys=HackersOrganized&severities=BLOCKER,CRITICAL,MAJOR,MINOR" -o sonar-issues.json
           
-          # Capture les valeurs directement dans des variables de sortie
+          # Capture values directly into output variables
           BLOCKER_COUNT=$(jq '[.issues[] | select(.severity=="BLOCKER")] | length' sonar-issues.json)
           CRITICAL_COUNT=$(jq '[.issues[] | select(.severity=="CRITICAL")] | length' sonar-issues.json)
           MAJOR_COUNT=$(jq '[.issues[] | select(.severity=="MAJOR")] | length' sonar-issues.json)
@@ -155,8 +170,9 @@ jobs:
           echo "${CRITICAL_COUNT}" >> $CLOUDBEES_OUTPUTS/critical_count
           echo "${MAJOR_COUNT}" >> $CLOUDBEES_OUTPUTS/major_count
           echo "${MINOR_COUNT}" >> $CLOUDBEES_OUTPUTS/minor_count
+
       - name: Publish evidence
-        uses: cloudbees-io/publish-evidence-item@v1
+        uses: https://github.com/cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
             ## SonarQube Analysis Results
@@ -168,38 +184,43 @@ jobs:
             | MAJOR         | ${{ steps.sonar_issues.outputs.major_count }} |
             | MINOR         | ${{ steps.sonar_issues.outputs.minor_count }} |
           format: MARKDOWN
+
   deploy:
     environment: DOW Production
     steps:
       - name: Checkout
-        uses: cloudbees-io/checkout@v1
-      - uses: cashokannamalai/kubeconfig@v1
-        name: Set kubeconfig
+        uses: https://github.com/cloudbees-io/checkout@v1
+
+      - name: Set kubeconfig
+        uses: https://github.com/cashokannamalai/kubeconfig@v1
         with:
           secname: ${{ secrets.kubeconfig }}
-      - uses: cloudbees-io/configure-oci-credentials@v1
-        name: Configure container registry credentials for deployment
+
+      - name: Configure container registry credentials for deployment
+        uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
         with:
           registry: nexus.cloudbees.guru:8082
           username: lsa26
           password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
-      - uses: cloudbees-io/kustomize-deploy@v1
-        name: Deploy to cluster
+
+      - name: Deploy to cluster
+        uses: https://github.com/cloudbees-io/kustomize-deploy@v1
         kind: deploy
         with:
           kustomization-base-dir: ${{ cloudbees.workspace }}/k8s/base
           kustomization-overlays-dir: ${{ cloudbees.workspace }}/k8s/overlays/prod
-          environment-variables: "{\"IMAGE_NAME\":\"nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}\"}"
+          environment-variables: '{"IMAGE_NAME":"nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}"}'
+
       - name: Publish evidence
-        uses: cloudbees-io/publish-evidence-item@v1
+        uses: https://github.com/cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
             ## Deployed environment
-            [Production frontend](https://hackers-organized-prod.preview.cb-demos.io/)
-
+            Production frontend
             Running hackers-organized:${{ cloudbees.scm.sha }} from Nexus Docker Repository
           format: MARKDOWN
-      - name: Register_deployed_artifact
+
+      - name: Register deployed artifact
         uses: https://github.com/cloudbees-io/register-deployed-artifact@v1
         with:
           name: "nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized"

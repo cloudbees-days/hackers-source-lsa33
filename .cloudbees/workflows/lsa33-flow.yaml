@@ -42,159 +42,161 @@ jobs:
             ${{ steps.RunUnitTest.outputs.CODE_COVERAGE }}
           format: MARKDOWN
           
-  build-and-push-nexus-curl:
+  build-and-push-nexus:
     steps:
       - uses: cloudbees-io/checkout@v1
         name: Get source code
         kind: build
-      - uses: docker://docker:20.10-dind
-        name: Build and extract Docker image
-        options:
-          privileged: true
-        run: |
-          # Attendre que le daemon Docker soit disponible
-          timeout=30
-          until docker info >/dev/null 2>&1 || [ $timeout -eq 0 ]
-          do
-            echo "En attente du démarrage du daemon Docker..."
-            sleep 1
-            ((timeout--))
-          done
-          
-          if [ $timeout -eq 0 ]; then
-            echo "Le daemon Docker n'a pas démarré à temps"
-            exit 1
-          fi
-          
-          apk add --no-cache tar gzip curl jq coreutils
-          docker build -t hackers-organized:${{ cloudbees.scm.sha }} .
-          docker save hackers-organized:${{ cloudbees.scm.sha }} -o image.tar
-          mkdir image_dir && tar -xf image.tar -C image_dir
-          jq -r '.[0].Config' image_dir/manifest.json > config_name
-          cp image_dir/$(cat config_name) config.json
-          jq -r '.[0].Layers[]' image_dir/manifest.json > layers.txt
-          while read layer; do cp image_dir/$layer $(basename $layer); done < layers.txt
+        continue-on-error: true
+      # Nous utilisons toujours kaniko pour construire l'image, mais sans la pousser
+      - uses: cloudbees-io/kaniko@v1
+        name: Build container image
+        kind: build
+        with:
+          destination: local/hackers-organized:${{ cloudbees.scm.sha }}
+          tar-path: container-image.tar
+          build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
+          no-push: true
+      - id: upload-binary
+        name: Upload binary for SBOM generation
+        uses: https://github.com/cloudbees-io/asset-chain-utils/upload-binary@v1
+        continue-on-error: true
+        with:
+          file-path: container-image.tar
+          file-type: BINARY_CONTAINER
+          debug: "true"
+      # On pousse maintenant l'image vers Nexus avec curl
       - uses: docker://alpine:latest
         name: Push to Nexus via CURL
         run: |
-          apk add --no-cache curl jq bash coreutils
+          apk add --no-cache curl jq tar gzip coreutils
           USERNAME=lsa26
           PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
-          # Correction: Vérifier les deux ports possibles
           REGISTRY=nexus.cloudbees.guru:8081
-          REPO=unify-docker-lsa26/hackers-organized
+          REPO=repository/unify-docker-lsa26
+          IMAGE_NAME=hackers-organized
           TAG=${{ cloudbees.scm.sha }}
           
-          echo "Vérification de l'existence du dépôt et de la connexion..."
-          # Vérifier si le repo existe et si les identifiants sont bons
-          CATALOG_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/_catalog 2>&1)
-          echo "Réponse du catalogue:"
-          echo "$CATALOG_RESPONSE"
+          # Test de connexion à Nexus
+          echo "Vérification de l'API Nexus..."
+          NEXUS_RESPONSE=$(curl -sS -u $USERNAME:$PASSWORD https://$REGISTRY/service/rest/v1/repositories 2>&1)
+          echo "Réponse de Nexus: $NEXUS_RESPONSE"
           
-          if echo "$CATALOG_RESPONSE" | grep -q "401 Unauthorized"; then
-            echo "ERREUR: Authentification échouée. Veuillez vérifier vos identifiants."
-            exit 1
-          fi
-
-          sha256_digest() { sha256sum $1 | awk '{print $1}'; }
+          # Extraction des couches de l'image
+          mkdir -p image_extraction
+          tar -xf container-image.tar -C image_extraction
+          cd image_extraction
+          
+          # Extraire les métadonnées de l'image
+          MANIFEST=$(cat manifest.json | jq -r '.[0]')
+          CONFIG_FILE=$(echo $MANIFEST | jq -r '.Config')
+          LAYERS=$(echo $MANIFEST | jq -r '.Layers[]')
+          
+          # Fonction pour pousser un blob vers Nexus
           push_blob() {
-            FILE=$1
-            DIGEST=sha256:$(sha256_digest $FILE)
-            echo "Envoi du blob: $FILE (digest: $DIGEST)"
-            UPLOAD_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X POST -i https://$REGISTRY/v2/$REPO/blobs/uploads/ 2>&1)
-            echo "Réponse de l'initialisation de l'upload:"
-            echo "$UPLOAD_RESPONSE"
+            local FILE=$1
+            local DIGEST=$(sha256sum $FILE | awk '{print $1}')
+            echo "Poussée du blob $FILE (SHA256:$DIGEST)..."
             
-            URL=$(echo "$UPLOAD_RESPONSE" | grep -Fi Location | awk '{print $2}' | tr -d '\r')
+            # Initialisation de l'upload
+            UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
+              "https://$REGISTRY/v2/$REPO/blobs/uploads/" \
+              -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
             
-            if [ -z "$URL" ]; then
-              echo "ERREUR: Impossible d'obtenir l'URL d'upload. Vérifiez que le repo existe."
+            if [ -z "$UPLOAD_URL" ]; then
+              echo "Erreur: Impossible d'obtenir l'URL d'upload"
               echo "Essai avec le port 8082..."
               REGISTRY=nexus.cloudbees.guru:8082
-              UPLOAD_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X POST -i https://$REGISTRY/v2/$REPO/blobs/uploads/ 2>&1)
-              URL=$(echo "$UPLOAD_RESPONSE" | grep -Fi Location | awk '{print $2}' | tr -d '\r')
+              UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
+                "https://$REGISTRY/v2/$REPO/blobs/uploads/" \
+                -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
               
-              if [ -z "$URL" ]; then
-                echo "ERREUR: Échec avec le port 8082 également."
-                exit 1
+              if [ -z "$UPLOAD_URL" ]; then
+                echo "Essai avec un chemin différent..."
+                UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
+                  "https://$REGISTRY/v2/unify-docker-lsa26/blobs/uploads/" \
+                  -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
+                  
+                if [ -z "$UPLOAD_URL" ]; then
+                  echo "Erreur: Échec avec toutes les tentatives"
+                  return 1
+                else
+                  REPO="unify-docker-lsa26"
+                  echo "Utilisation du chemin /v2/unify-docker-lsa26/"
+                fi
               else
-                echo "Port 8082 fonctionne, utilisation de ce port pour la suite."
+                echo "Port 8082 fonctionne, utilisation pour la suite"
               fi
             fi
             
-            echo "URL d'upload obtenue: $URL"
-            PUSH_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X PUT "$URL&digest=$DIGEST" --data-binary @$FILE -H "Content-Type: application/octet-stream" 2>&1)
-            echo "Réponse de l'upload du blob:"
-            echo "$PUSH_RESPONSE"
+            # Upload du blob
+            curl -sS -u $USERNAME:$PASSWORD -X PUT \
+              "${UPLOAD_URL}&digest=sha256:${DIGEST}" \
+              --data-binary @$FILE
           }
-
-          echo "Envoi du fichier de configuration..."
-          push_blob config.json
-          echo "Envoi des couches de l'image..."
-          for f in *.tar.gz *.tar; do 
-            if [ -f "$f" ]; then
-              echo "Traitement de la couche: $f"
-              push_blob $f
-            fi
+          
+          # Pousser la configuration
+          echo "Envoi du fichier de configuration $CONFIG_FILE..."
+          push_blob $CONFIG_FILE
+          
+          # Pousser les couches
+          for LAYER in $LAYERS; do
+            echo "Envoi de la couche $LAYER..."
+            push_blob $LAYER
           done
-
-          CONFIG_DIGEST=sha256:$(sha256_digest config.json)
-          echo "Digest du fichier de configuration: $CONFIG_DIGEST"
           
-          LAYERS_JSON=$(for f in *.tar.gz *.tar; do 
-            if [ -f "$f" ]; then
-              echo "{\"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\", \"size\": $(stat -c%s $f), \"digest\": \"sha256:$(sha256_digest $f)\"},"
-            fi
-          done | sed '$ s/,$//')
+          # Créer et pousser le manifest
+          CONFIG_DIGEST=$(sha256sum $CONFIG_FILE | awk '{print $1}')
+          CONFIG_SIZE=$(stat -c %s $CONFIG_FILE)
           
-          echo "JSON des couches: $LAYERS_JSON"
-
-          # Création du manifest JSON
-          cat > manifest.json << EOF
-          {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-            "config": {
-              "mediaType": "application/vnd.docker.container.image.v1+json",
-              "size": $(stat -c%s config.json),
-              "digest": "$CONFIG_DIGEST"
+          # Construire le JSON pour les couches
+          LAYERS_JSON=""
+          for LAYER in $LAYERS; do
+            LAYER_DIGEST=$(sha256sum $LAYER | awk '{print $1}')
+            LAYER_SIZE=$(stat -c %s $LAYER)
+            LAYERS_JSON="${LAYERS_JSON}{\"mediaType\":\"application/vnd.docker.image.rootfs.diff.tar.gzip\",\"size\":${LAYER_SIZE},\"digest\":\"sha256:${LAYER_DIGEST}\"},"
+          done
+          LAYERS_JSON=$(echo $LAYERS_JSON | sed 's/,$//')
+          
+          # Créer le manifest
+          echo "Création du manifest..."
+          MANIFEST_JSON="{
+            \"schemaVersion\":2,
+            \"mediaType\":\"application/vnd.docker.distribution.manifest.v2+json\",
+            \"config\":{
+              \"mediaType\":\"application/vnd.docker.container.image.v1+json\",
+              \"size\":${CONFIG_SIZE},
+              \"digest\":\"sha256:${CONFIG_DIGEST}\"
             },
-            "layers": [
-              $LAYERS_JSON
-            ]
-          }
-          EOF
+            \"layers\":[${LAYERS_JSON}]
+          }"
           
-          echo "Manifest créé:"
-          cat manifest.json
-
-          # Envoi du manifest à Nexus
+          echo "$MANIFEST_JSON" > manifest.json
+          
+          # Pousser le manifest
           echo "Envoi du manifest..."
-          MANIFEST_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X PUT \
+          curl -sS -u $USERNAME:$PASSWORD -X PUT \
             -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
             --data-binary @manifest.json \
-            https://$REGISTRY/v2/$REPO/manifests/$TAG 2>&1)
+            "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}"
           
-          echo "Réponse de l'envoi du manifest:"
-          echo "$MANIFEST_RESPONSE"
+          # Enregistrer les informations de l'image pour l'étape de déploiement
+          echo "NEXUS_REGISTRY=$REGISTRY" >> $CLOUDBEES_OUTPUTS/NEXUS_REGISTRY
+          echo "NEXUS_REPO=$REPO" >> $CLOUDBEES_OUTPUTS/NEXUS_REPO
           
-          # Vérification du résultat
-          if echo "$MANIFEST_RESPONSE" | grep -q "201 Created"; then
-            echo "✅ Image poussée avec succès à $REGISTRY/v2/$REPO:$TAG"
-          else
-            echo "❌ Échec de l'envoi de l'image. Vérifiez les logs ci-dessus pour les détails."
-            exit 1
-          fi
-
-      - name: Confirm Nexus upload success
+          cd ..
+          
+      - name: Publish evidence
         uses: cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
-            ## Image pushed to Nexus with CURL
-            - **Registry**: nexus.cloudbees.guru:8081 ou 8082 (détecté automatiquement)
-            - **Repository**: unify-docker-lsa26/hackers-organized
-            - **Tag**: ${{ cloudbees.scm.sha }}
-            - ✅ Uploaded with raw API requests using curl
+            ## Built and pushed image to Nexus
+            
+            Registry: nexus.cloudbees.guru:8081 (ou 8082)
+            Repository: ${{ steps.push-to-nexus.outputs.NEXUS_REPO }}
+            Image: hackers-organized:${{ cloudbees.scm.sha }}
+            
+            Image poussée via API REST avec curl.
           format: MARKDOWN
     needs: test
   
@@ -285,7 +287,7 @@ jobs:
           namespace: ${{ env.NAMESPACE }}
           values: |
             image:
-              repository: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized
+              repository: nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/hackers-organized
               tag: ${{ cloudbees.scm.sha }}
             fmKey: ${{ secrets.FM_TOKEN }}
             hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
@@ -301,11 +303,11 @@ jobs:
       - name: Register_deployed_artifact
         uses: https://github.com/cloudbees-io/register-deployed-artifact@v1
         with:
-          name: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized
+          name: nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/hackers-organized
           version: ${{ cloudbees.scm.sha }}
-          url: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
+          url: nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
           digest: ""
           target-environment: lsa33
     needs:
-      - build-and-push-nexus-curl
+      - build-and-push-nexus
       - scan

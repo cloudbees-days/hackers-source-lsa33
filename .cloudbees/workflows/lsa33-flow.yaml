@@ -13,6 +13,8 @@ permissions:
 env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
+  DOCKER_REGISTRY: nexus.cloudbees.guru:8081
+  DOCKER_REPO: repository/unify-docker-lsa26
 jobs:
   test:
     outputs:
@@ -92,84 +94,97 @@ jobs:
         id: push-to-nexus
         name: Push to Nexus via CURL
         run: |
+          set -e  # Arrêter l'exécution en cas d'erreur
           apk add --no-cache curl jq tar gzip coreutils
+          
           USERNAME=lsa26
           PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
-          REGISTRY=nexus.cloudbees.guru:8081
-          REPO=repository/unify-docker-lsa26
-          IMAGE_NAME=hackers-organized
+          REGISTRY=${{ env.DOCKER_REGISTRY }}
+          REPO_PATH=${{ env.DOCKER_REPO }}
+          IMAGE_NAME=${{ env.APP_NAME }}
           TAG=${{ cloudbees.scm.sha }}
           
           # Test de connexion à Nexus
-          echo "Vérification de l'API Nexus..."
-          NEXUS_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD https://$REGISTRY/service/rest/v1/repositories 2>&1)
-          echo "Réponse de Nexus: $NEXUS_RESPONSE"
+          echo "📡 Vérification de l'API Nexus..."
+          if ! curl -s -f -u $USERNAME:$PASSWORD https://$REGISTRY/$REPO_PATH/v2/ > /dev/null; then
+            echo "❌ Erreur: Impossible de se connecter à l'API Docker Registry"
+            exit 1
+          fi
+          echo "✅ Connexion à l'API Docker Registry réussie"
           
           # Fonction pour calculer le digest SHA256
-          sha256_digest() { sha256sum $1 | awk '{print $1}'; }
+          sha256_digest() { sha256sum "$1" | awk '{print $1}'; }
           
           # Fonction pour pousser un blob vers Nexus
           push_blob() {
             local FILE=$1
-            local DIGEST=sha256:$(sha256_digest $FILE)
-            echo "Poussée du blob $FILE (SHA256:$DIGEST)..."
+            local DIGEST=sha256:$(sha256_digest "$FILE")
+            echo "📤 Poussée du blob $FILE (SHA256:$DIGEST)..."
             
             # Initialisation de l'upload
-            echo "Initialisation de l'upload pour $FILE..."
-            INIT_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X POST \
-              "https://$REGISTRY/v2/$REPO/blobs/uploads/" 2>&1)
-            echo "Réponse d'initialisation: $INIT_RESPONSE"
-              
-            UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i Location | awk '{print $3}' | tr -d '\r')
+            echo "🔄 Initialisation de l'upload pour $FILE..."
+            local UPLOAD_URL
+            local INIT_RESPONSE
             
-            if [ -z "$UPLOAD_URL" ]; then
-              echo "Impossible d'obtenir l'URL d'upload. Essai avec d'autres chemins..."
-              
-              # Liste tous les endpoints possibles pour comprendre la structure
-              echo "Liste des endpoints Docker Registry disponibles:"
-              curl -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/
-              curl -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/_catalog
-              
-              # Essayer différents chemins
-              echo "Essai avec le chemin /repository/unify-docker-lsa26/"
-              INIT_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X POST \
-                "https://$REGISTRY/repository/unify-docker-lsa26/v2/blobs/uploads/" 2>&1)
-              UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i Location | awk '{print $3}' | tr -d '\r')
-              
-              if [ -z "$UPLOAD_URL" ]; then
-                echo "ERREUR: Impossible de déterminer l'URL d'upload pour Nexus"
-                exit 1
-              else
-                echo "Chemin alternatif trouvé: /repository/unify-docker-lsa26/v2/"
-                REPO="repository/unify-docker-lsa26"
-              fi
+            INIT_RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD -X POST \
+              "https://$REGISTRY/$REPO_PATH/v2/blobs/uploads/" -D /tmp/headers.txt 2>&1)
+            
+            if [ $? -ne 0 ]; then
+              echo "❌ Échec de l'initialisation de l'upload"
+              echo "$INIT_RESPONSE"
+              exit 1
             fi
             
-            echo "URL d'upload obtenue: $UPLOAD_URL"
+            UPLOAD_URL=$(grep -i Location /tmp/headers.txt | awk '{print $2}' | tr -d '\r')
+            
+            if [ -z "$UPLOAD_URL" ]; then
+              echo "❌ Impossible d'obtenir l'URL d'upload"
+              exit 1
+            fi
+            
+            echo "🔗 URL d'upload obtenue: $UPLOAD_URL"
             
             # Upload du blob
-            curl -sS -u $USERNAME:$PASSWORD -X PUT \
-              "${UPLOAD_URL}&digest=sha256:${DIGEST}" \
-              --data-binary @$FILE
+            local UPLOAD_RESPONSE
+            UPLOAD_RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD -X PUT \
+              "${UPLOAD_URL}&digest=$DIGEST" \
+              --data-binary @"$FILE" -D /tmp/upload.txt)
             
-            # Retourner le digest pour référence
-            echo $DIGEST
+            if [ $? -ne 0 ]; then
+              echo "❌ Échec de l'upload du blob"
+              echo "$UPLOAD_RESPONSE"
+              exit 1
+            fi
+            
+            local STATUS_CODE=$(head -n1 /tmp/upload.txt | awk '{print $2}')
+            if [[ "$STATUS_CODE" != "201" && "$STATUS_CODE" != "202" ]]; then
+              echo "❌ Erreur lors de l'upload du blob: Code $STATUS_CODE"
+              cat /tmp/upload.txt
+              exit 1
+            fi
+            
+            echo "✅ Blob uploadé avec succès"
+            
+            # Retourner le digest sans le préfixe sha256:
+            echo "${DIGEST#sha256:}"
           }
           
           # Pousser le fichier image.tar
+          echo "🚀 Poussée de la couche d'image..."
           IMAGE_LAYER_DIGEST=$(push_blob image.tar)
-          echo "Image layer digest: $IMAGE_LAYER_DIGEST"
+          echo "✅ Image layer digest: $IMAGE_LAYER_DIGEST"
           
           # Pousser la configuration
+          echo "🚀 Poussée de la configuration..."
           CONFIG_DIGEST=$(push_blob config.json)
-          echo "Config digest: $CONFIG_DIGEST"
+          echo "✅ Config digest: $CONFIG_DIGEST"
           
           # Obtenir les tailles des fichiers
           CONFIG_SIZE=$(stat -c %s config.json)
           LAYER_SIZE=$(stat -c %s image.tar)
           
           # Créer le manifest
-          echo "Création du manifest..."
+          echo "📝 Création du manifest..."
           MANIFEST_JSON="{
             \"schemaVersion\": 2,
             \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\",
@@ -190,22 +205,34 @@ jobs:
           echo "$MANIFEST_JSON" > manifest.json
           
           # Pousser le manifest
-          echo "Envoi du manifest..."
-          MANIFEST_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X PUT \
+          echo "🚀 Envoi du manifest..."
+          MANIFEST_RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD -X PUT \
             -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
             --data-binary @manifest.json \
-            "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
+            "https://$REGISTRY/$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}" -D /tmp/manifest.txt)
             
-          echo "Réponse du serveur pour le manifest:"
-          echo "$MANIFEST_RESPONSE"
+          local STATUS_CODE=$(head -n1 /tmp/manifest.txt | awk '{print $2}')
+          if [[ "$STATUS_CODE" != "201" && "$STATUS_CODE" != "202" ]]; then
+            echo "❌ Erreur lors de l'envoi du manifest: Code $STATUS_CODE"
+            cat /tmp/manifest.txt
+            exit 1
+          fi
+          
+          echo "✅ Manifest envoyé avec succès"
           
           # Vérifier si l'image a été correctement poussée
-          echo "Vérification de la présence de l'image..."
-          curl -sS -v -u $USERNAME:$PASSWORD \
-            "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}"
+          echo "🔍 Vérification de la présence de l'image..."
+          if ! curl -s -f -u $USERNAME:$PASSWORD \
+            "https://$REGISTRY/$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}" > /dev/null; then
+            echo "❌ Erreur: Image non trouvée après le push"
+            exit 1
+          fi
           
-          # Sauvegarder le chemin complet de l'image
-          echo "$REGISTRY/$REPO/$IMAGE_NAME:$TAG" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
+          echo "✅ Image poussée avec succès: $REGISTRY/$REPO_PATH/$IMAGE_NAME:$TAG"
+          
+          # Sauvegarder le chemin complet de l'image pour utilisation ultérieure
+          FULL_IMAGE_PATH="$REGISTRY/$REPO_PATH/$IMAGE_NAME:$TAG"
+          echo "$FULL_IMAGE_PATH" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
       
       - name: Publish evidence
         uses: cloudbees-io/publish-evidence-item@v1
@@ -213,11 +240,13 @@ jobs:
           content: |-
             ## Built and pushed image to Nexus
             
-            Registry: nexus.cloudbees.guru:8081
-            Repository: unify-docker-lsa26
-            Image: hackers-organized:${{ cloudbees.scm.sha }}
+            Image Docker poussée avec succès:
             
-            Image poussée via API REST avec curl.
+            **Registry**: ${{ env.DOCKER_REGISTRY }}
+            **Repository**: ${{ env.DOCKER_REPO }}
+            **Image**: ${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+            
+            Image complète: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           format: MARKDOWN
     needs: test
   
@@ -245,7 +274,7 @@ jobs:
           cover-file-name: coverage/clover.xml
           sonar-exclusion: tests/*
       - uses: cloudbees-io/snyk-sast-scan-code@v1
-        name: Synk SAST
+        name: Snyk SAST
         kind: scan
         continue-on-error: true
         with:
@@ -308,7 +337,7 @@ jobs:
           namespace: ${{ env.NAMESPACE }}
           values: |
             image:
-              repository: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized
+              repository: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
               tag: ${{ cloudbees.scm.sha }}
             fmKey: ${{ secrets.FM_TOKEN }}
             hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
@@ -317,16 +346,19 @@ jobs:
         with:
           content: |-
             ## Deployed environment
+            
+            ✅ Application déployée avec succès!
+            
             [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
-
-            Running hackers-organized:${{ cloudbees.scm.sha }} from Nexus registry
+            
+            Image Docker: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           format: MARKDOWN
-      - name: Register_deployed_artifact
-        uses: https://github.com/cloudbees-io/register-deployed-artifact@v1
+      - name: Register deployed artifact
+        uses: cloudbees-io/register-deployed-artifact@v1
         with:
-          name: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized
+          name: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
           version: ${{ cloudbees.scm.sha }}
-          url: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
+          url: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           digest: ""
           target-environment: lsa33
     needs:

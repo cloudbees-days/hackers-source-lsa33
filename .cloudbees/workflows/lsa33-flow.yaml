@@ -1,139 +1,227 @@
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
-name: "lsa33-nexus-simple"
+name: Main workflow
 on:
   push:
     branches:
       - "**"
   workflow_dispatch:
-
 permissions:
   scm-token-own: read
   scm-token-org: read
   id-token: write
-
+env:
+  APP_NAME: hackers-organized
+  NAMESPACE: lsa33
 jobs:
-  build-and-push:
+  test:
+    outputs:
+      CODE_COVERAGE: ${{ steps.RunUnitTest.outputs.CODE_COVERAGE }}
     steps:
-      - name: Checkout source code
-        uses: https://github.com/cloudbees-io/checkout@v1
-
-      - name: Configure Nexus Docker Registry credentials
-        uses: https://github.com/cloudbees-io/configure-oci-credentials@v1
-        id: dockerconfig
+      - uses: cloudbees-io/checkout@v1
+        name: Get source code
+        continue-on-error: true
+      - name: Run unit tests
+        id: RunUnitTest
+        kind: test
+        uses: docker://node:lts
+        run: |
+          npm ci
+          npm run test:unit
+          npx jest --coverage >> $CLOUDBEES_OUTPUTS/CODE_COVERAGE
+      - name: Publish test results
+        uses: cloudbees-io/publish-test-results@v1
         with:
-          registry: https://nexus.cloudbees.guru:8082
-          username: lsa26
-          password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
-
-      - name: Build and push container image
-        uses: https://github.com/cloudbees-io/kaniko@v1
-        with:
-          destination: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
-          tar-path: container-image.tar
-
-      - name: Verify image push success
-        uses: https://github.com/cloudbees-io/publish-evidence-item@v1
+          test-type: JUnit
+          folder-name: ${{ cloudbees.workspace }}/junit.xml
+      - name: Publish evidence
+        uses: cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
-            ## Docker Image Successfully Built and Pushed
-            - **Repository**: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized
-            - **Tag**: ${{ cloudbees.scm.sha }}
-            - **Full Image**: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
+            ## Test code coverage
+            ${{ steps.RunUnitTest.outputs.CODE_COVERAGE }}
           format: MARKDOWN
-
-  test-nexus-api:
-    needs: build-and-push
+          
+  build-and-push-nexus-curl:
     steps:
-      - name: Test Nexus Docker Registry API
-        uses: docker://alpine:latest
+      - uses: cloudbees-io/checkout@v1
+        name: Get source code
+        kind: build
+      - uses: docker://docker:latest
+        name: Build and extract Docker image
         run: |
-          # Install curl and jq
-          apk add --no-cache curl jq
-          
-          echo "🔍 Testing Nexus Docker Registry API..."
-          
-          # Test 1: Check if registry is accessible
-          echo "1. Testing registry endpoint accessibility..."
-          curl -k -u lsa26:${{ secrets.NEXUS_PASSWORD_LSA26 }} \
-            https://nexus.cloudbees.guru:8082/v2/ || echo "❌ Registry endpoint not accessible"
-          
-          # Test 2: List repositories
-          echo "2. Listing available repositories..."
-          curl -k -u lsa26:${{ secrets.NEXUS_PASSWORD_LSA26 }} \
-            https://nexus.cloudbees.guru:8082/v2/_catalog | jq '.' || echo "❌ Cannot list repositories"
-          
-          # Test 3: Check our specific repository
-          echo "3. Checking repository 'unify-docker-lsa26/hackers-organized'..."
-          curl -k -u lsa26:${{ secrets.NEXUS_PASSWORD_LSA26 }} \
-            https://nexus.cloudbees.guru:8082/v2/unify-docker-lsa26/hackers-organized/tags/list | jq '.' || echo "❌ Repository not found"
-          
-          # Test 4: Check if our specific tag exists
-          echo "4. Checking if tag '${{ cloudbees.scm.sha }}' exists..."
-          MANIFEST_RESPONSE=$(curl -k -s -u lsa26:${{ secrets.NEXUS_PASSWORD_LSA26 }} \
-            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            https://nexus.cloudbees.guru:8082/v2/unify-docker-lsa26/hackers-organized/manifests/${{ cloudbees.scm.sha }})
-          
-          if echo "$MANIFEST_RESPONSE" | jq -e '.schemaVersion' > /dev/null 2>&1; then
-            echo "✅ Image manifest found for tag ${{ cloudbees.scm.sha }}"
-            echo "$MANIFEST_RESPONSE" | jq '.'
-          else
-            echo "❌ Image manifest not found for tag ${{ cloudbees.scm.sha }}"
-            echo "Response: $MANIFEST_RESPONSE"
-          fi
-          
-          echo "🏁 Nexus API tests completed!"
+          apk add --no-cache tar gzip curl jq sha256sum
+          docker build -t hackers-organized:${{ cloudbees.scm.sha }} .
+          docker save hackers-organized:${{ cloudbees.scm.sha }} -o image.tar
+          mkdir image_dir && tar -xf image.tar -C image_dir
+          jq -r '.[0].Config' image_dir/manifest.json > config_name
+          cp image_dir/$(cat config_name) config.json
+          jq -r '.[0].Layers[]' image_dir/manifest.json > layers.txt
+          while read layer; do cp image_dir/$layer $(basename $layer); done < layers.txt
+      - uses: docker://alpine:latest
+        name: Push to Nexus via CURL
+        run: |
+          apk add --no-cache curl jq bash coreutils
+          USERNAME=lsa26
+          PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
+          REGISTRY=nexus.cloudbees.guru:8082
+          REPO=unify-docker-lsa26/hackers-organized
+          TAG=${{ cloudbees.scm.sha }}
 
-      - name: Test Docker Registry Pull Capability
-        uses: docker://alpine:latest
-        run: |
-          # Install Docker CLI and curl
-          apk add --no-cache docker-cli curl
-          
-          echo "🐳 Testing Docker pull capability..."
-          
-          # Configure Docker for insecure registry (if needed)
-          mkdir -p ~/.docker
-          cat > ~/.docker/config.json << EOF
+          sha256_digest() { sha256sum $1 | awk '{print $1}'; }
+          push_blob() {
+            FILE=$1
+            DIGEST=sha256:$(sha256_digest $FILE)
+            URL=$(curl -su $USERNAME:$PASSWORD -X POST -i https://$REGISTRY/v2/$REPO/blobs/uploads/ | grep -Fi Location | awk '{print $2}' | tr -d '\r')
+            curl -su $USERNAME:$PASSWORD -X PUT "$URL&digest=$DIGEST" --data-binary @$FILE -H "Content-Type: application/octet-stream"
+          }
+
+          push_blob config.json
+          for f in *.tar.gz *.tar; do [ -f "$f" ] && push_blob $f; done
+
+          CONFIG_DIGEST=sha256:$(sha256_digest config.json)
+          LAYERS_JSON=$(for f in *.tar.gz *.tar; do [ -f "$f" ] && echo "{\"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\", \"size\": $(stat -c%s $f), \"digest\": \"sha256:$(sha256_digest $f)\"},"; done | sed '$ s/,$//')
+
+          cat > manifest.json << 'EOF'
           {
-            "auths": {
-              "nexus.cloudbees.guru:8082": {
-                "auth": "$(echo -n 'lsa26:${{ secrets.NEXUS_PASSWORD_LSA26 }}' | base64)"
-              }
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+              "mediaType": "application/vnd.docker.container.image.v1+json",
+              "size": $(stat -c%s config.json),
+              "digest": "$CONFIG_DIGEST"
             },
-            "insecure-registries": ["nexus.cloudbees.guru:8082"]
+            "layers": [
+              $LAYERS_JSON
+            ]
           }
           EOF
-          
-          # Try to pull the image
-          if docker pull nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}; then
-            echo "✅ Successfully pulled image from Nexus!"
-            docker images | grep "nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized"
-          else
-            echo "❌ Failed to pull image from Nexus"
-            exit 1
-          fi
 
-      - name: Verify API and Pull Results
-        uses: https://github.com/cloudbees-io/publish-evidence-item@v1
+          # Envoyer le manifeste à Nexus
+          curl -su $USERNAME:$PASSWORD -X PUT \
+            -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
+            --data-binary @manifest.json \
+            https://$REGISTRY/v2/$REPO/manifests/$TAG
+      - name: Confirm Nexus upload success
+        uses: cloudbees-io/publish-evidence-item@v1
         with:
           content: |-
-            ## Nexus Docker Registry Verification Complete
-            
-            ### API Tests Results:
-            - ✅ Registry endpoint accessibility
-            - ✅ Repository listing
-            - ✅ Specific repository check
-            - ✅ Image manifest verification
-            
-            ### Docker Pull Test:
-            - **Image**: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
-            - **Status**: ✅ Pull operation successful
-            - **Registry**: Nexus Docker Repository (unify-docker-lsa26)
-            
-            ### Registry Details:
-            - **URL**: https://nexus.cloudbees.guru:8082
-            - **Repository**: unify-docker-lsa26
-            - **Image**: hackers-organized
+            ## Image pushed to Nexus with CURL
+            - **Registry**: nexus.cloudbees.guru:8082
+            - **Repository**: unify-docker-lsa26/hackers-organized
             - **Tag**: ${{ cloudbees.scm.sha }}
+            - ✅ Uploaded with raw API requests using curl
           format: MARKDOWN
+    needs: test
+  
+  scan:
+    outputs:
+      BLOCKER_COUNT: ${{ steps.FetchSonarQubeIssues.outputs.BLOCKER_COUNT }}
+      CRITICAL_COUNT: ${{ steps.FetchSonarQubeIssues.outputs.CRITICAL_COUNT }}
+      MAJOR_COUNT: ${{ steps.FetchSonarQubeIssues.outputs.MAJOR_COUNT }}
+      MINOR_COUNT: ${{ steps.FetchSonarQubeIssues.outputs.MINOR_COUNT }}
+    steps:
+      - name: Checkout
+        uses: cloudbees-io/checkout@v1
+      - name: Get code coverage
+        kind: test
+        uses: docker://node:lts
+        run: |
+          npm ci
+          npm run test:coverage
+      - uses: cloudbees-io/sonarqube-bundled-sast-scan-code@v1
+        name: Scan with SonarQube
+        kind: scan
+        continue-on-error: true
+        with:
+          language: LANGUAGE_JS
+          cover-file-name: coverage/clover.xml
+          sonar-exclusion: tests/*
+      - uses: cloudbees-io/snyk-sast-scan-code@v1
+        name: Synk SAST
+        kind: scan
+        continue-on-error: true
+        with:
+          orgname: ${{ secrets.SNYK_ORGNAME }}
+          token: ${{ secrets.SNYK_TOKEN }}
+          language: LANGUAGE_JS
+      - name: Scan with Snyk SCA
+        uses: cloudbees-io/snyk-sca-scan-dependency@v1
+        continue-on-error: true
+        with:
+          orgname: ${{ secrets.SNYK_ORGNAME }}
+          token: ${{ secrets.SNYK_TOKEN }}
+          language: LANGUAGE_JS
+      - name: Fetch SonarQube Issues
+        id: FetchSonarQubeIssues
+        uses: docker://alpine/git:latest
+        run: |
+          apk add --no-cache curl jq
+          curl -u ${{ secrets.SONAR_USER }}:${{ secrets.SONAR_TOKEN }} \
+          "https://sonarqube.cb-demos.io/api/issues/search?componentKeys=HackersOrganized&severities=BLOCKER,CRITICAL,MAJOR,MINOR" \
+          -o sonar-issues.json
+          BLOCKER_COUNT=$(jq '[.issues[] | select(.severity=="BLOCKER")] | length' sonar-issues.json)
+          CRITICAL_COUNT=$(jq '[.issues[] | select(.severity=="CRITICAL")] | length' sonar-issues.json)
+          MAJOR_COUNT=$(jq '[.issues[] | select(.severity=="MAJOR")] | length' sonar-issues.json)
+          MINOR_COUNT=$(jq '[.issues[] | select(.severity=="MINOR")] | length' sonar-issues.json)
+
+          echo "${BLOCKER_COUNT}" >> $CLOUDBEES_OUTPUTS/BLOCKER_COUNT
+          echo "${CRITICAL_COUNT}" >> $CLOUDBEES_OUTPUTS/CRITICAL_COUNT
+          echo "${MAJOR_COUNT}" >> $CLOUDBEES_OUTPUTS/MAJOR_COUNT
+          echo "${MINOR_COUNT}" >> $CLOUDBEES_OUTPUTS/MINOR_COUNT
+      - name: Publish evidence
+        uses: cloudbees-io/publish-evidence-item@v1
+        with:
+          content: |-
+            ## SonarQube Analysis Results
+
+            | Severity             | Issue Count |
+            |----------------------|-------------|
+            | BLOCKER_COUNT        | ${{ steps.FetchSonarQubeIssues.outputs.BLOCKER_COUNT }} |
+            | CRITICAL_COUNT       | ${{ steps.FetchSonarQubeIssues.outputs.CRITICAL_COUNT }} |
+            | MAJOR_COUNT          | ${{ steps.FetchSonarQubeIssues.outputs.MAJOR_COUNT }} |
+            | MINOR_COUNT          | ${{ steps.FetchSonarQubeIssues.outputs.MINOR_COUNT }} |
+          format: MARKDOWN
+          
+  deploy:
+    environment: lsa33
+    steps:
+      - name: Checkout
+        uses: cloudbees-io/checkout@v1
+      - uses: cashokannamalai/kubeconfig@v1
+        name: Set kubeconfig
+        with:
+          secname: ${{ secrets.kubeconfig }}
+      - id: install-chart
+        name: Install helm chart
+        uses: cloudbees-io/helm-install@v1
+        with:
+          chart-location: ${{ cloudbees.workspace }}/chart
+          release-name: ${{ env.APP_NAME }}
+          namespace: ${{ env.NAMESPACE }}
+          values: |
+            image:
+              repository: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized
+              tag: ${{ cloudbees.scm.sha }}
+            fmKey: ${{ secrets.FM_TOKEN }}
+            hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
+      - name: Publish evidence
+        uses: cloudbees-io/publish-evidence-item@v1
+        with:
+          content: |-
+            ## Deployed environment
+            [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
+
+            Running hackers-organized:${{ cloudbees.scm.sha }} from Nexus registry
+          format: MARKDOWN
+      - name: Register_deployed_artifact
+        uses: https://github.com/cloudbees-io/register-deployed-artifact@v1
+        with:
+          name: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized
+          version: ${{ cloudbees.scm.sha }}
+          url: nexus.cloudbees.guru:8082/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
+          digest: ""
+          target-environment: lsa33
+    needs:
+      - build-and-push-nexus-curl
+      - scan

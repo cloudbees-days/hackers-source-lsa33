@@ -96,7 +96,7 @@ jobs:
           USERNAME=lsa26
           PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
           REGISTRY=nexus.cloudbees.guru:8081
-          REPO=unify-docker-lsa26
+          REPO=repository/unify-docker-lsa26
           IMAGE_NAME=hackers-organized
           TAG=${{ cloudbees.scm.sha }}
           

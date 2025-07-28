@@ -48,23 +48,46 @@ jobs:
         name: Get source code
         kind: build
         continue-on-error: true
-      # Utiliser cloudbees-io/kaniko seulement pour construire l'image et la sauvegarder en tar
-      - uses: cloudbees-io/kaniko@v1
-        name: Build container image
-        kind: build
-        with:
-          destination: dummy/hackers-organized:${{ cloudbees.scm.sha }}
-          tar-path: container-image.tar
-          build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
-      - id: upload-binary
-        name: Upload binary for SBOM generation
-        uses: https://github.com/cloudbees-io/asset-chain-utils/upload-binary@v1
-        continue-on-error: true
-        with:
-          file-path: container-image.tar
-          file-type: BINARY_CONTAINER
-          debug: "true"
-      # On pousse maintenant l'image vers Nexus avec curl
+      # On utilisera buildkit directement dans un conteneur Node pour construire l'image
+      - uses: docker://node:lts
+        name: Build image directly
+        run: |
+          # Installation des dépendances et build de l'application
+          npm ci --no-audit
+          npm run build
+          
+          # Création d'une image minimaliste manuellement
+          mkdir -p /tmp/docker-build
+          cd /tmp/docker-build
+          
+          # Copier les fichiers nécessaires
+          mkdir -p usr/share/nginx/html
+          cp -r $CLOUDBEES_WORKSPACE/dist/* usr/share/nginx/html/
+          
+          # Créer le tarball pour Nexus
+          tar -cf /tmp/image.tar ./usr
+          
+          # Créer un fichier de configuration minimaliste pour l'image Docker
+          echo '{
+            "architecture": "amd64",
+            "config": {
+              "Hostname": "",
+              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+              "Cmd": ["nginx", "-g", "daemon off;"],
+              "WorkingDir": "/",
+              "ExposedPorts": {"80/tcp": {}}
+            },
+            "rootfs": {
+              "type": "layers",
+              "diff_ids": []
+            }
+          }' > /tmp/config.json
+          
+          # Créer les fichiers nécessaires pour le Nexus push
+          cp /tmp/image.tar $CLOUDBEES_WORKSPACE/
+          cp /tmp/config.json $CLOUDBEES_WORKSPACE/
+      
+      # Pousser l'image vers Nexus
       - uses: docker://alpine:latest
         id: push-to-nexus
         name: Push to Nexus via CURL
@@ -79,103 +102,111 @@ jobs:
           
           # Test de connexion à Nexus
           echo "Vérification de l'API Nexus..."
-          NEXUS_RESPONSE=$(curl -sS -u $USERNAME:$PASSWORD https://$REGISTRY/service/rest/v1/repositories 2>&1)
+          NEXUS_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD https://$REGISTRY/service/rest/v1/repositories 2>&1)
           echo "Réponse de Nexus: $NEXUS_RESPONSE"
           
-          # Extraction des couches de l'image
-          mkdir -p image_extraction
-          tar -xf container-image.tar -C image_extraction
-          cd image_extraction
-          
-          # Extraire les métadonnées de l'image
-          MANIFEST=$(cat manifest.json | jq -r '.[0]')
-          CONFIG_FILE=$(echo $MANIFEST | jq -r '.Config')
-          LAYERS=$(echo $MANIFEST | jq -r '.Layers[]')
+          # Fonction pour calculer le digest SHA256
+          sha256_digest() { sha256sum $1 | awk '{print $1}'; }
           
           # Fonction pour pousser un blob vers Nexus
           push_blob() {
             local FILE=$1
-            local DIGEST=$(sha256sum $FILE | awk '{print $1}')
+            local DIGEST=sha256:$(sha256_digest $FILE)
             echo "Poussée du blob $FILE (SHA256:$DIGEST)..."
             
             # Initialisation de l'upload
-            UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
-              "https://$REGISTRY/v2/$REPO/blobs/uploads/" \
-              -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
+            echo "Initialisation de l'upload pour $FILE..."
+            INIT_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X POST \
+              "https://$REGISTRY/v2/$REPO/blobs/uploads/" 2>&1)
+            echo "Réponse d'initialisation: $INIT_RESPONSE"
+              
+            UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i Location | awk '{print $3}' | tr -d '\r')
             
             if [ -z "$UPLOAD_URL" ]; then
-              echo "Erreur: Impossible d'obtenir l'URL d'upload"
-              echo "Essai avec un chemin différent..."
-              UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
-                "https://$REGISTRY/repository/unify-docker-lsa26/v2/blobs/uploads/" \
-                -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
-                
+              echo "Impossible d'obtenir l'URL d'upload. Essai avec d'autres chemins..."
+              
+              # Liste tous les endpoints possibles pour comprendre la structure
+              echo "Liste des endpoints Docker Registry disponibles:"
+              curl -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/
+              curl -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/_catalog
+              
+              # Essayer différents chemins
+              echo "Essai avec le chemin /repository/unify-docker-lsa26/"
+              INIT_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X POST \
+                "https://$REGISTRY/repository/unify-docker-lsa26/v2/blobs/uploads/" 2>&1)
+              UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i Location | awk '{print $3}' | tr -d '\r')
+              
               if [ -z "$UPLOAD_URL" ]; then
-                echo "Erreur: Échec avec toutes les tentatives"
-                curl -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/
+                echo "ERREUR: Impossible de déterminer l'URL d'upload pour Nexus"
                 exit 1
               else
-                echo "Utilisation du chemin /repository/unify-docker-lsa26/v2/"
+                echo "Chemin alternatif trouvé: /repository/unify-docker-lsa26/v2/"
                 REPO="repository/unify-docker-lsa26"
               fi
             fi
+            
+            echo "URL d'upload obtenue: $UPLOAD_URL"
             
             # Upload du blob
             curl -sS -u $USERNAME:$PASSWORD -X PUT \
               "${UPLOAD_URL}&digest=sha256:${DIGEST}" \
               --data-binary @$FILE
+            
+            # Retourner le digest pour référence
+            echo $DIGEST
           }
           
+          # Pousser le fichier image.tar
+          IMAGE_LAYER_DIGEST=$(push_blob image.tar)
+          echo "Image layer digest: $IMAGE_LAYER_DIGEST"
+          
           # Pousser la configuration
-          echo "Envoi du fichier de configuration $CONFIG_FILE..."
-          push_blob $CONFIG_FILE
+          CONFIG_DIGEST=$(push_blob config.json)
+          echo "Config digest: $CONFIG_DIGEST"
           
-          # Pousser les couches
-          for LAYER in $LAYERS; do
-            echo "Envoi de la couche $LAYER..."
-            push_blob $LAYER
-          done
-          
-          # Créer et pousser le manifest
-          CONFIG_DIGEST=$(sha256sum $CONFIG_FILE | awk '{print $1}')
-          CONFIG_SIZE=$(stat -c %s $CONFIG_FILE)
-          
-          # Construire le JSON pour les couches
-          LAYERS_JSON=""
-          for LAYER in $LAYERS; do
-            LAYER_DIGEST=$(sha256sum $LAYER | awk '{print $1}')
-            LAYER_SIZE=$(stat -c %s $LAYER)
-            LAYERS_JSON="${LAYERS_JSON}{\"mediaType\":\"application/vnd.docker.image.rootfs.diff.tar.gzip\",\"size\":${LAYER_SIZE},\"digest\":\"sha256:${LAYER_DIGEST}\"},"
-          done
-          LAYERS_JSON=$(echo $LAYERS_JSON | sed 's/,$//')
+          # Obtenir les tailles des fichiers
+          CONFIG_SIZE=$(stat -c %s config.json)
+          LAYER_SIZE=$(stat -c %s image.tar)
           
           # Créer le manifest
           echo "Création du manifest..."
           MANIFEST_JSON="{
-            \"schemaVersion\":2,
-            \"mediaType\":\"application/vnd.docker.distribution.manifest.v2+json\",
-            \"config\":{
-              \"mediaType\":\"application/vnd.docker.container.image.v1+json\",
-              \"size\":${CONFIG_SIZE},
-              \"digest\":\"sha256:${CONFIG_DIGEST}\"
+            \"schemaVersion\": 2,
+            \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\",
+            \"config\": {
+              \"mediaType\": \"application/vnd.docker.container.image.v1+json\",
+              \"size\": ${CONFIG_SIZE},
+              \"digest\": \"sha256:${CONFIG_DIGEST}\"
             },
-            \"layers\":[${LAYERS_JSON}]
+            \"layers\": [
+              {
+                \"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\",
+                \"size\": ${LAYER_SIZE},
+                \"digest\": \"sha256:${IMAGE_LAYER_DIGEST}\"
+              }
+            ]
           }"
           
           echo "$MANIFEST_JSON" > manifest.json
           
           # Pousser le manifest
           echo "Envoi du manifest..."
-          curl -sS -u $USERNAME:$PASSWORD -X PUT \
+          MANIFEST_RESPONSE=$(curl -sS -v -u $USERNAME:$PASSWORD -X PUT \
             -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
             --data-binary @manifest.json \
+            "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
+            
+          echo "Réponse du serveur pour le manifest:"
+          echo "$MANIFEST_RESPONSE"
+          
+          # Vérifier si l'image a été correctement poussée
+          echo "Vérification de la présence de l'image..."
+          curl -sS -v -u $USERNAME:$PASSWORD \
             "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}"
           
           # Sauvegarder le chemin complet de l'image
           echo "$REGISTRY/$REPO/$IMAGE_NAME:$TAG" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
-          
-          cd ..
-          
+      
       - name: Publish evidence
         uses: cloudbees-io/publish-evidence-item@v1
         with:

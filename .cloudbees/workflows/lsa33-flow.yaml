@@ -213,7 +213,6 @@ jobs:
           orgname: ${{ secrets.SNYK_ORGNAME }}
           token: ${{ secrets.SNYK_TOKEN }}
           language: LANGUAGE_JS
-          additional-args: "--skip=npm-audit"
       - name: Scan with Snyk SCA
         uses: cloudbees-io/snyk-sca-scan-dependency@v1
         continue-on-error: true
@@ -221,7 +220,6 @@ jobs:
           orgname: ${{ secrets.SNYK_ORGNAME }}
           token: ${{ secrets.SNYK_TOKEN }}
           language: LANGUAGE_JS
-          additional-args: "--skip=npm-audit"
       - name: Fetch SonarQube Issues
         id: FetchSonarQubeIssues
         uses: docker://alpine/git:latest

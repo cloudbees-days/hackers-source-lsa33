@@ -48,7 +48,7 @@ jobs:
         name: Get source code
         kind: build
         continue-on-error: true
-      # Nous utilisons toujours kaniko pour construire l'image, mais sans la pousser
+      # Nous utilisons kaniko pour construire l'image et la sauvegarder comme tar
       - uses: cloudbees-io/kaniko@v1
         name: Build container image
         kind: build
@@ -56,7 +56,6 @@ jobs:
           destination: local/hackers-organized:${{ cloudbees.scm.sha }}
           tar-path: container-image.tar
           build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
-          no-push: true
       - id: upload-binary
         name: Upload binary for SBOM generation
         uses: https://github.com/cloudbees-io/asset-chain-utils/upload-binary@v1
@@ -67,6 +66,7 @@ jobs:
           debug: "true"
       # On pousse maintenant l'image vers Nexus avec curl
       - uses: docker://alpine:latest
+        id: push-to-nexus
         name: Push to Nexus via CURL
         run: |
           apk add --no-cache curl jq tar gzip coreutils
@@ -181,8 +181,7 @@ jobs:
             "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}"
           
           # Enregistrer les informations de l'image pour l'étape de déploiement
-          echo "NEXUS_REGISTRY=$REGISTRY" >> $CLOUDBEES_OUTPUTS/NEXUS_REGISTRY
-          echo "NEXUS_REPO=$REPO" >> $CLOUDBEES_OUTPUTS/NEXUS_REPO
+          echo "nexus.cloudbees.guru:8081/repository/unify-docker-lsa26" > $CLOUDBEES_OUTPUTS/NEXUS_REGISTRY
           
           cd ..
           
@@ -193,7 +192,7 @@ jobs:
             ## Built and pushed image to Nexus
             
             Registry: nexus.cloudbees.guru:8081 (ou 8082)
-            Repository: ${{ steps.push-to-nexus.outputs.NEXUS_REPO }}
+            Repository: repository/unify-docker-lsa26
             Image: hackers-organized:${{ cloudbees.scm.sha }}
             
             Image poussée via API REST avec curl.

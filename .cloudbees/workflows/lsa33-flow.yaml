@@ -50,7 +50,7 @@ jobs:
       - uses: docker://docker:latest
         name: Build and extract Docker image
         run: |
-          apk add --no-cache tar gzip curl jq sha256sum
+          apk add --no-cache tar gzip curl jq coreutils
           docker build -t hackers-organized:${{ cloudbees.scm.sha }} .
           docker save hackers-organized:${{ cloudbees.scm.sha }} -o image.tar
           mkdir image_dir && tar -xf image.tar -C image_dir
@@ -82,7 +82,8 @@ jobs:
           CONFIG_DIGEST=sha256:$(sha256_digest config.json)
           LAYERS_JSON=$(for f in *.tar.gz *.tar; do [ -f "$f" ] && echo "{\"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\", \"size\": $(stat -c%s $f), \"digest\": \"sha256:$(sha256_digest $f)\"},"; done | sed '$ s/,$//')
 
-          cat > manifest.json << 'EOF'
+          # Création du manifest JSON
+          cat > manifest.json << EOF
           {
             "schemaVersion": 2,
             "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
@@ -97,11 +98,12 @@ jobs:
           }
           EOF
 
-          # Envoyer le manifeste à Nexus
+          # Envoi du manifest à Nexus
           curl -su $USERNAME:$PASSWORD -X PUT \
             -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
             --data-binary @manifest.json \
             https://$REGISTRY/v2/$REPO/manifests/$TAG
+
       - name: Confirm Nexus upload success
         uses: cloudbees-io/publish-evidence-item@v1
         with:

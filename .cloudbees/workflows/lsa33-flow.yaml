@@ -94,7 +94,8 @@ jobs:
         id: push-to-nexus
         name: Push to Nexus via CURL
         run: |
-          set -e  # Arrêter l'exécution en cas d'erreur
+          # Ne pas arrêter immédiatement en cas d'erreur pour voir les messages d'erreur
+          set +e
           apk add --no-cache curl jq tar gzip coreutils
           
           USERNAME=lsa26
@@ -121,46 +122,61 @@ jobs:
             local DIGEST=sha256:$(sha256_digest "$FILE")
             echo "📤 Poussée du blob $FILE (SHA256:$DIGEST)..."
             
+            # Vérifier si le fichier existe
+            if [ ! -f "$FILE" ]; then
+              echo "❌ Erreur: Le fichier $FILE n'existe pas!"
+              ls -la
+              return 1
+            fi
+            
+            echo "📦 Taille du fichier: $(du -h "$FILE")"
+            
             # Initialisation de l'upload
             echo "🔄 Initialisation de l'upload pour $FILE..."
             local UPLOAD_URL
             local INIT_RESPONSE
             
-            INIT_RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD -X POST \
-              "https://$REGISTRY/$REPO_PATH/v2/blobs/uploads/" -D /tmp/headers.txt 2>&1)
+            INIT_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X POST \
+              "https://$REGISTRY/$REPO_PATH/v2/blobs/uploads/" 2>&1)
             
-            if [ $? -ne 0 ]; then
-              echo "❌ Échec de l'initialisation de l'upload"
-              echo "$INIT_RESPONSE"
-              exit 1
-            fi
+            echo "🔍 Réponse d'initialisation complète:"
+            echo "$INIT_RESPONSE"
             
-            UPLOAD_URL=$(grep -i Location /tmp/headers.txt | awk '{print $2}' | tr -d '\r')
+            UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i "< location:" | awk '{print $3}' | tr -d '\r')
             
             if [ -z "$UPLOAD_URL" ]; then
               echo "❌ Impossible d'obtenir l'URL d'upload"
-              exit 1
+              echo "Essai avec format d'URL alternatif..."
+              
+              # Tentative alternative
+              INIT_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X POST \
+                "https://$REGISTRY/$REPO_PATH/v2/blobs/uploads/" 2>&1)
+                
+              # Recherche d'autres patterns pour l'URL d'upload
+              UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i "location:" | awk '{print $2}' | tr -d '\r')
+              
+              if [ -z "$UPLOAD_URL" ]; then
+                echo "❌ Échec: Impossible d'extraire l'URL d'upload"
+                return 1
+              fi
             fi
             
             echo "🔗 URL d'upload obtenue: $UPLOAD_URL"
             
             # Upload du blob
+            echo "📤 Upload du blob avec l'URL: ${UPLOAD_URL}&digest=$DIGEST"
             local UPLOAD_RESPONSE
-            UPLOAD_RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD -X PUT \
+            UPLOAD_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT \
               "${UPLOAD_URL}&digest=$DIGEST" \
-              --data-binary @"$FILE" -D /tmp/upload.txt)
+              --data-binary @"$FILE" 2>&1)
             
-            if [ $? -ne 0 ]; then
-              echo "❌ Échec de l'upload du blob"
-              echo "$UPLOAD_RESPONSE"
-              exit 1
-            fi
+            echo "🔍 Réponse d'upload complète:"
+            echo "$UPLOAD_RESPONSE"
             
-            local STATUS_CODE=$(head -n1 /tmp/upload.txt | awk '{print $2}')
-            if [[ "$STATUS_CODE" != "201" && "$STATUS_CODE" != "202" ]]; then
-              echo "❌ Erreur lors de l'upload du blob: Code $STATUS_CODE"
-              cat /tmp/upload.txt
-              exit 1
+            local HTTP_CODE=$(echo "$UPLOAD_RESPONSE" | grep -i "< HTTP" | awk '{print $3}')
+            if [[ ! "$HTTP_CODE" =~ ^20[0-9]$ ]]; then
+              echo "❌ Erreur lors de l'upload du blob: Code $HTTP_CODE"
+              return 1
             fi
             
             echo "✅ Blob uploadé avec succès"
@@ -172,11 +188,25 @@ jobs:
           # Pousser le fichier image.tar
           echo "🚀 Poussée de la couche d'image..."
           IMAGE_LAYER_DIGEST=$(push_blob image.tar)
+          
+          # Vérifier si le push a réussi
+          if [ $? -ne 0 ]; then
+            echo "❌ Échec lors de la poussée de la couche d'image"
+            exit 1
+          fi
+          
           echo "✅ Image layer digest: $IMAGE_LAYER_DIGEST"
           
           # Pousser la configuration
           echo "🚀 Poussée de la configuration..."
           CONFIG_DIGEST=$(push_blob config.json)
+          
+          # Vérifier si le push a réussi
+          if [ $? -ne 0 ]; then
+            echo "❌ Échec lors de la poussée de la configuration"
+            exit 1
+          fi
+          
           echo "✅ Config digest: $CONFIG_DIGEST"
           
           # Obtenir les tailles des fichiers
@@ -206,15 +236,17 @@ jobs:
           
           # Pousser le manifest
           echo "🚀 Envoi du manifest..."
-          MANIFEST_RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD -X PUT \
+          MANIFEST_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT \
             -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
             --data-binary @manifest.json \
-            "https://$REGISTRY/$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}" -D /tmp/manifest.txt)
+            "https://$REGISTRY/$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
             
-          local STATUS_CODE=$(head -n1 /tmp/manifest.txt | awk '{print $2}')
-          if [[ "$STATUS_CODE" != "201" && "$STATUS_CODE" != "202" ]]; then
-            echo "❌ Erreur lors de l'envoi du manifest: Code $STATUS_CODE"
-            cat /tmp/manifest.txt
+          echo "🔍 Réponse du manifest complète:"
+          echo "$MANIFEST_RESPONSE"
+          
+          HTTP_CODE=$(echo "$MANIFEST_RESPONSE" | grep -i "< HTTP" | awk '{print $3}')
+          if [[ ! "$HTTP_CODE" =~ ^20[0-9]$ ]]; then
+            echo "❌ Erreur lors de l'envoi du manifest: Code $HTTP_CODE"
             exit 1
           fi
           
@@ -222,9 +254,13 @@ jobs:
           
           # Vérifier si l'image a été correctement poussée
           echo "🔍 Vérification de la présence de l'image..."
-          if ! curl -s -f -u $USERNAME:$PASSWORD \
-            "https://$REGISTRY/$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}" > /dev/null; then
-            echo "❌ Erreur: Image non trouvée après le push"
+          VERIFY_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD \
+            "https://$REGISTRY/$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
+            
+          HTTP_CODE=$(echo "$VERIFY_RESPONSE" | grep -i "< HTTP" | awk '{print $3}')
+          if [[ ! "$HTTP_CODE" =~ ^20[0-9]$ ]]; then
+            echo "❌ Erreur: Image non trouvée après le push: Code $HTTP_CODE"
+            echo "$VERIFY_RESPONSE"
             exit 1
           fi
           

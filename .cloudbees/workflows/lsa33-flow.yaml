@@ -47,9 +47,25 @@ jobs:
       - uses: cloudbees-io/checkout@v1
         name: Get source code
         kind: build
-      - uses: docker://docker:latest
+      - uses: docker://docker:20.10-dind
         name: Build and extract Docker image
+        options:
+          privileged: true
         run: |
+          # Attendre que le daemon Docker soit disponible
+          timeout=30
+          until docker info >/dev/null 2>&1 || [ $timeout -eq 0 ]
+          do
+            echo "En attente du démarrage du daemon Docker..."
+            sleep 1
+            ((timeout--))
+          done
+          
+          if [ $timeout -eq 0 ]; then
+            echo "Le daemon Docker n'a pas démarré à temps"
+            exit 1
+          fi
+          
           apk add --no-cache tar gzip curl jq coreutils
           docker build -t hackers-organized:${{ cloudbees.scm.sha }} .
           docker save hackers-organized:${{ cloudbees.scm.sha }} -o image.tar

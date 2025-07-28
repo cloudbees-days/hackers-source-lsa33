@@ -48,12 +48,12 @@ jobs:
         name: Get source code
         kind: build
         continue-on-error: true
-      # Nous utilisons kaniko pour construire l'image et la sauvegarder comme tar
+      # Utiliser cloudbees-io/kaniko seulement pour construire l'image et la sauvegarder en tar
       - uses: cloudbees-io/kaniko@v1
         name: Build container image
         kind: build
         with:
-          destination: local/hackers-organized:${{ cloudbees.scm.sha }}
+          destination: dummy/hackers-organized:${{ cloudbees.scm.sha }}
           tar-path: container-image.tar
           build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
       - id: upload-binary
@@ -73,7 +73,7 @@ jobs:
           USERNAME=lsa26
           PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
           REGISTRY=nexus.cloudbees.guru:8081
-          REPO=repository/unify-docker-lsa26
+          REPO=unify-docker-lsa26
           IMAGE_NAME=hackers-organized
           TAG=${{ cloudbees.scm.sha }}
           
@@ -105,27 +105,18 @@ jobs:
             
             if [ -z "$UPLOAD_URL" ]; then
               echo "Erreur: Impossible d'obtenir l'URL d'upload"
-              echo "Essai avec le port 8082..."
-              REGISTRY=nexus.cloudbees.guru:8082
+              echo "Essai avec un chemin différent..."
               UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
-                "https://$REGISTRY/v2/$REPO/blobs/uploads/" \
+                "https://$REGISTRY/repository/unify-docker-lsa26/v2/blobs/uploads/" \
                 -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
-              
+                
               if [ -z "$UPLOAD_URL" ]; then
-                echo "Essai avec un chemin différent..."
-                UPLOAD_URL=$(curl -sS -u $USERNAME:$PASSWORD -X POST \
-                  "https://$REGISTRY/v2/unify-docker-lsa26/blobs/uploads/" \
-                  -v 2>&1 | grep -i Location | awk '{print $3}' | tr -d '\r')
-                  
-                if [ -z "$UPLOAD_URL" ]; then
-                  echo "Erreur: Échec avec toutes les tentatives"
-                  return 1
-                else
-                  REPO="unify-docker-lsa26"
-                  echo "Utilisation du chemin /v2/unify-docker-lsa26/"
-                fi
+                echo "Erreur: Échec avec toutes les tentatives"
+                curl -v -u $USERNAME:$PASSWORD https://$REGISTRY/v2/
+                exit 1
               else
-                echo "Port 8082 fonctionne, utilisation pour la suite"
+                echo "Utilisation du chemin /repository/unify-docker-lsa26/v2/"
+                REPO="repository/unify-docker-lsa26"
               fi
             fi
             
@@ -180,8 +171,8 @@ jobs:
             --data-binary @manifest.json \
             "https://$REGISTRY/v2/$REPO/manifests/${IMAGE_NAME}:${TAG}"
           
-          # Enregistrer les informations de l'image pour l'étape de déploiement
-          echo "nexus.cloudbees.guru:8081/repository/unify-docker-lsa26" > $CLOUDBEES_OUTPUTS/NEXUS_REGISTRY
+          # Sauvegarder le chemin complet de l'image
+          echo "$REGISTRY/$REPO/$IMAGE_NAME:$TAG" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
           
           cd ..
           
@@ -191,8 +182,8 @@ jobs:
           content: |-
             ## Built and pushed image to Nexus
             
-            Registry: nexus.cloudbees.guru:8081 (ou 8082)
-            Repository: repository/unify-docker-lsa26
+            Registry: nexus.cloudbees.guru:8081
+            Repository: unify-docker-lsa26
             Image: hackers-organized:${{ cloudbees.scm.sha }}
             
             Image poussée via API REST avec curl.
@@ -286,7 +277,7 @@ jobs:
           namespace: ${{ env.NAMESPACE }}
           values: |
             image:
-              repository: nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/hackers-organized
+              repository: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized
               tag: ${{ cloudbees.scm.sha }}
             fmKey: ${{ secrets.FM_TOKEN }}
             hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
@@ -302,9 +293,9 @@ jobs:
       - name: Register_deployed_artifact
         uses: https://github.com/cloudbees-io/register-deployed-artifact@v1
         with:
-          name: nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/hackers-organized
+          name: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized
           version: ${{ cloudbees.scm.sha }}
-          url: nexus.cloudbees.guru:8081/repository/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
+          url: nexus.cloudbees.guru:8081/unify-docker-lsa26/hackers-organized:${{ cloudbees.scm.sha }}
           digest: ""
           target-environment: lsa33
     needs:

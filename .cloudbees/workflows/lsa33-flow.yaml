@@ -61,7 +61,7 @@ jobs:
       - name: Build and push Docker image
         uses: cloudbees-io/kaniko@v1
         with:
-          destination: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }},${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:latest
+          destination: ${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }},${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:latest
           build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
       
       - name: Verify Docker image push
@@ -88,7 +88,7 @@ jobs:
             **Repository**: ${{ env.DOCKER_REPO }}
             **Image**: ${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
             
-            Image complète: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+            Image complète: ${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           format: MARKDOWN
 
   scan:
@@ -181,7 +181,7 @@ jobs:
           namespace: ${{ env.NAMESPACE }}
           values: |
             image:
-              repository: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
+              repository: ${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
               tag: ${{ cloudbees.scm.sha }}
             fmKey: ${{ secrets.FM_TOKEN }}
             hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
@@ -193,13 +193,13 @@ jobs:
             ✅ Application déployée avec succès!
             [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
             
-            Image Docker: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+            Image Docker: ${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           format: MARKDOWN
       - name: Register deployed artifact
         uses: cloudbees-io/register-deployed-artifact@v1
         with:
-          name: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
+          name: ${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
           version: ${{ cloudbees.scm.sha }}
-          url: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+          url: ${{ secrets.NEXUS_URL_LSA26 }}:5002/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           digest: ""
           target-environment: lsa33

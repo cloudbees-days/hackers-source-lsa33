@@ -13,7 +13,7 @@ permissions:
 env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
-  DOCKER_REPO: repository/unify-docker-lsa26
+  DOCKER_REPO: repository/docker-hosted-repo
 jobs:
   test:
     outputs:

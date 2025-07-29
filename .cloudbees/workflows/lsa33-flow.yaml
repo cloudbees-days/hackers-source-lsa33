@@ -13,8 +13,6 @@ permissions:
 env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
-  DOCKER_REGISTRY: nexus.cloudbees.guru:8081
-  DOCKER_REPO: repository/unify-docker-lsa26
 jobs:
   test:
     outputs:
@@ -28,7 +26,7 @@ jobs:
         kind: test
         uses: docker://node:lts
         run: |
-          npm ci --no-audit
+          npm ci
           npm run test:unit
           npx jest --coverage >> $CLOUDBEES_OUTPUTS/CODE_COVERAGE
       - name: Publish test results
@@ -43,269 +41,54 @@ jobs:
             ## Test code coverage
             ${{ steps.RunUnitTest.outputs.CODE_COVERAGE }}
           format: MARKDOWN
+build-and-push-nexus:
+  steps:
+    - uses: cloudbees-io/checkout@v1
+      name: Get source code
+      kind: build
+      continue-on-error: true
+    
+    - name: Configure Docker registry credentials
+      uses: cloudbees-io/configure-oci-credentials@v1
+      with:
+        registry: ${{ secrets.NEXUS_URL_LSA26 }}
+        username: ${{ secrets.NEXUS_LOGIN_LSA26 }}
+        password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
+    
+    - name: Build and push Docker image
+      uses: cloudbees-io/kaniko@v1
+      with:
+        destination: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }},${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:latest
+        build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
+    
+    - name: Verify Docker image push
+      uses: docker://alpine:latest
+      run: |
+        apk add --no-cache curl
+        
+        echo "🔍 Vérification de l'image poussée..."
+        
+        # Enregistrer le chemin complet de l'image pour les étapes suivantes
+        FULL_IMAGE_PATH="${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}"
+        echo "Image complète: $FULL_IMAGE_PATH"
+        echo "$FULL_IMAGE_PATH" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
+    
+    - name: Publish evidence
+      uses: cloudbees-io/publish-evidence-item@v1
+      with:
+        content: |-
+          ## Built and pushed image to Nexus
           
-  build-and-push-nexus:
-    steps:
-      - uses: cloudbees-io/checkout@v1
-        name: Get source code
-        kind: build
-        continue-on-error: true
-      # On utilisera buildkit directement dans un conteneur Node pour construire l'image
-      - uses: docker://node:lts
-        name: Build image directly
-        run: |
-          # Installation des dépendances et build de l'application
-          npm ci --no-audit
-          npm run build
+          Image Docker poussée avec succès:
           
-          # Création d'une image minimaliste manuellement
-          mkdir -p /tmp/docker-build
-          cd /tmp/docker-build
+          **Registry**: ${{ secrets.NEXUS_URL_LSA26 }}
+          **Repository**: ${{ env.DOCKER_REPO }}
+          **Image**: ${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
           
-          # Copier les fichiers nécessaires
-          mkdir -p usr/share/nginx/html
-          cp -r $CLOUDBEES_WORKSPACE/dist/* usr/share/nginx/html/
-          
-          # Créer le tarball pour Nexus
-          tar -cf /tmp/image.tar ./usr
-          gzip -9 /tmp/image.tar
-          
-          # Créer un fichier de configuration minimaliste pour l'image Docker
-          echo '{
-            "architecture": "amd64",
-            "config": {
-              "Hostname": "",
-              "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
-              "Cmd": ["nginx", "-g", "daemon off;"],
-              "WorkingDir": "/",
-              "ExposedPorts": {"80/tcp": {}}
-            },
-            "rootfs": {
-              "type": "layers",
-              "diff_ids": []
-            }
-          }' > /tmp/config.json
-          
-          # Créer les fichiers nécessaires pour le Nexus push
-          cp /tmp/image.tar.gz $CLOUDBEES_WORKSPACE/
-          cp /tmp/config.json $CLOUDBEES_WORKSPACE/
-      
-      # Pousser l'image vers Nexus
-      - uses: docker://alpine:latest
-        id: push-to-nexus
-        name: Push to Nexus via CURL
-        run: |
-          # Utiliser bash explicitement pour la compatibilité
-          apk add --no-cache curl jq tar gzip coreutils bash
-          
-          # Exécuter avec bash
-          bash -c '
-          # Ne pas arrêter immédiatement en cas d'erreur pour voir les messages d'erreur
-          set +e
-          
-          USERNAME=lsa26
-          PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
-          REGISTRY=${{ env.DOCKER_REGISTRY }}
-          REPO_PATH=${{ env.DOCKER_REPO }}
-          IMAGE_NAME=${{ env.APP_NAME }}
-          TAG=${{ cloudbees.scm.sha }}
-          
-          # Vérifier les fichiers
-          echo "📂 Vérification des fichiers:"
-          ls -la
-          
-          # Test de connexion à Nexus avec différents chemins
-          echo "📡 Test des chemins API possibles..."
-          
-          # Vérifier le chemin principal
-          echo "🔍 Test du chemin: https://$REGISTRY/$REPO_PATH/v2/"
-          if curl -s -f -u $USERNAME:$PASSWORD "https://$REGISTRY/$REPO_PATH/v2/" > /dev/null; then
-            echo "✅ Connexion réussie à $REGISTRY/$REPO_PATH/v2/"
-            API_PATH="$REPO_PATH/v2"
-          else
-            echo "❌ Échec de connexion à $REGISTRY/$REPO_PATH/v2/"
-            
-            # Essayer un autre chemin
-            echo "🔍 Test du chemin: https://$REGISTRY/v2/$REPO_PATH/"
-            if curl -s -f -u $USERNAME:$PASSWORD "https://$REGISTRY/v2/$REPO_PATH/" > /dev/null; then
-              echo "✅ Connexion réussie à $REGISTRY/v2/$REPO_PATH/"
-              API_PATH="v2/$REPO_PATH"
-            else
-              echo "❌ Échec de connexion à $REGISTRY/v2/$REPO_PATH/"
-              
-              # Essayer encore un autre chemin
-              echo "🔍 Test du chemin: https://$REGISTRY/v2/"
-              if curl -s -f -u $USERNAME:$PASSWORD "https://$REGISTRY/v2/" > /dev/null; then
-                echo "✅ Connexion réussie à $REGISTRY/v2/"
-                API_PATH="v2"
-              else
-                echo "❌ Échec de connexion à tous les chemins API testés"
-                exit 1
-              fi
-            fi
-          fi
-          
-          echo "✅ Utilisation du chemin API: $API_PATH"
-          
-          # Fonction pour calculer le digest SHA256
-          sha256_digest() { sha256sum "$1" | awk "{print \$1}"; }
-          
-          # Fonction pour pousser un blob vers Nexus
-          push_blob() {
-            local FILE=$1
-            local DIGEST=sha256:$(sha256_digest "$FILE")
-            echo "📤 Poussée du blob $FILE (SHA256:$DIGEST)..."
-            
-            # Vérifier si le fichier existe
-            if [ ! -f "$FILE" ]; then
-              echo "❌ Erreur: Le fichier $FILE nexiste pas!"
-              ls -la
-              return 1
-            fi
-            
-            echo "📦 Taille du fichier: $(du -h "$FILE")"
-            
-            # Initialisation de l'upload
-            echo "🔄 Initialisation de l'upload pour $FILE..."
-            
-            # Essayer le chemin principal
-            INIT_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X POST "https://$REGISTRY/$API_PATH/blobs/uploads/" 2>&1)
-            echo "🔍 Réponse dinitialisation:"
-            echo "$INIT_RESPONSE"
-            
-            # Extraire l'URL d'upload
-            UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i "Location:" | head -1 | awk "{print \$2}" | tr -d "\r")
-            
-            if [ -z "$UPLOAD_URL" ]; then
-              echo "❌ Impossible dobtenir lURL dupload"
-              return 1
-            fi
-            
-            echo "🔗 URL dupload obtenue: $UPLOAD_URL"
-            
-            # Upload du blob
-            echo "📤 Upload du blob..."
-            UPLOAD_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT "${UPLOAD_URL}&digest=$DIGEST" --data-binary @"$FILE" 2>&1)
-            
-            echo "🔍 Réponse dupload:"
-            echo "$UPLOAD_RESPONSE"
-            
-            # Vérifier si l'upload a réussi (code 201 Created)
-            if echo "$UPLOAD_RESPONSE" | grep -q "201 Created"; then
-              echo "✅ Blob uploadé avec succès"
-            else
-              echo "❌ Échec de lupload du blob"
-              return 1
-            fi
-            
-            # Retourner le digest sans le préfixe sha256:
-            echo "${DIGEST#sha256:}"
-          }
-          
-          # Pousser le fichier image.tar.gz
-          echo "🚀 Poussée de la couche dimage..."
-          IMAGE_LAYER_DIGEST=$(push_blob image.tar.gz)
-          
-          # Vérifier si le push a réussi
-          if [ $? -ne 0 ]; then
-            echo "❌ Échec lors de la poussée de la couche dimage"
-            exit 1
-          fi
-          
-          echo "✅ Image layer digest: $IMAGE_LAYER_DIGEST"
-          
-          # Pousser la configuration
-          echo "🚀 Poussée de la configuration..."
-          CONFIG_DIGEST=$(push_blob config.json)
-          
-          # Vérifier si le push a réussi
-          if [ $? -ne 0 ]; then
-            echo "❌ Échec lors de la poussée de la configuration"
-            exit 1
-          fi
-          
-          echo "✅ Config digest: $CONFIG_DIGEST"
-          
-          # Obtenir les tailles des fichiers
-          CONFIG_SIZE=$(stat -c %s config.json)
-          LAYER_SIZE=$(stat -c %s image.tar.gz)
-          
-          # Créer le manifest
-          echo "📝 Création du manifest..."
-          MANIFEST_JSON="{
-            \"schemaVersion\": 2,
-            \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\",
-            \"config\": {
-              \"mediaType\": \"application/vnd.docker.container.image.v1+json\",
-              \"size\": ${CONFIG_SIZE},
-              \"digest\": \"sha256:${CONFIG_DIGEST}\"
-            },
-            \"layers\": [
-              {
-                \"mediaType\": \"application/vnd.docker.image.rootfs.diff.tar.gzip\",
-                \"size\": ${LAYER_SIZE},
-                \"digest\": \"sha256:${IMAGE_LAYER_DIGEST}\"
-              }
-            ]
-          }"
-          
-          echo "$MANIFEST_JSON" > manifest.json
-          
-          # Pousser le manifest
-          echo "🚀 Envoi du manifest..."
-          MANIFEST_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT \
-            -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
-            --data-binary @manifest.json \
-            "https://$REGISTRY/$API_PATH/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
-            
-          echo "🔍 Réponse du manifest:"
-          echo "$MANIFEST_RESPONSE"
-          
-          # Vérifier si le manifest a été envoyé avec succès
-          if echo "$MANIFEST_RESPONSE" | grep -q "201 Created"; then
-            echo "✅ Manifest envoyé avec succès"
-          else
-            echo "❌ Échec de lenvoi du manifest"
-            exit 1
-          fi
-          
-          # Vérifier si l'image a été correctement poussée
-          echo "🔍 Vérification de la présence de limage..."
-          VERIFY_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD \
-            "https://$REGISTRY/$API_PATH/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
-          
-          echo "🔍 Réponse de vérification:"
-          echo "$VERIFY_RESPONSE"
-          
-          # Vérifier si l'image est accessible
-          if echo "$VERIFY_RESPONSE" | grep -q "200 OK"; then
-            echo "✅ Image trouvée après le push"
-          else
-            echo "⚠️ Image non confirmée après le push"
-          fi
-          
-          # Sauvegarder le chemin complet de l'image
-          FULL_IMAGE_PATH="$REGISTRY/$REPO_PATH/$IMAGE_NAME:$TAG"
-          echo "$FULL_IMAGE_PATH" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
-          echo "✅ Terminé: $FULL_IMAGE_PATH"
-          '
-      
-      - name: Publish evidence
-        uses: cloudbees-io/publish-evidence-item@v1
-        with:
-          content: |-
-            ## Built and pushed image to Nexus
-            
-            Image Docker poussée avec succès:
-            
-            **Registry**: ${{ env.DOCKER_REGISTRY }}
-            **Repository**: ${{ env.DOCKER_REPO }}
-            **Image**: ${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-            
-            Image complète: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-          format: MARKDOWN
-    needs: test
-  
+          Image complète: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+        format: MARKDOWN
+      needs: test
+
   scan:
     outputs:
       BLOCKER_COUNT: ${{ steps.FetchSonarQubeIssues.outputs.BLOCKER_COUNT }}
@@ -319,7 +102,7 @@ jobs:
         kind: test
         uses: docker://node:lts
         run: |
-          npm ci --no-audit
+          npm ci
           npm run test:coverage
       - uses: cloudbees-io/sonarqube-bundled-sast-scan-code@v1
         name: Scan with SonarQube
@@ -330,7 +113,7 @@ jobs:
           cover-file-name: coverage/clover.xml
           sonar-exclusion: tests/*
       - uses: cloudbees-io/snyk-sast-scan-code@v1
-        name: Snyk SAST
+        name: Synk SAST
         kind: scan
         continue-on-error: true
         with:
@@ -374,49 +157,47 @@ jobs:
             | MAJOR_COUNT          | ${{ steps.FetchSonarQubeIssues.outputs.MAJOR_COUNT }} |
             | MINOR_COUNT          | ${{ steps.FetchSonarQubeIssues.outputs.MINOR_COUNT }} |
           format: MARKDOWN
-          
   deploy:
-    environment: lsa33
-    steps:
-      - name: Checkout
-        uses: cloudbees-io/checkout@v1
-      - uses: cashokannamalai/kubeconfig@v1
-        name: Set kubeconfig
-        with:
-          secname: ${{ secrets.kubeconfig }}
-      - id: install-chart
-        name: Install helm chart
-        uses: cloudbees-io/helm-install@v1
-        with:
-          chart-location: ${{ cloudbees.workspace }}/chart
-          release-name: ${{ env.APP_NAME }}
-          namespace: ${{ env.NAMESPACE }}
-          values: |
-            image:
-              repository: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
-              tag: ${{ cloudbees.scm.sha }}
-            fmKey: ${{ secrets.FM_TOKEN }}
-            hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
-      - name: Publish evidence
-        uses: cloudbees-io/publish-evidence-item@v1
-        with:
-          content: |-
-            ## Deployed environment
-            
-            ✅ Application déployée avec succès!
-            
-            [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
-            
-            Image Docker: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-          format: MARKDOWN
-      - name: Register deployed artifact
-        uses: cloudbees-io/register-deployed-artifact@v1
-        with:
-          name: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
-          version: ${{ cloudbees.scm.sha }}
-          url: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-          digest: ""
-          target-environment: lsa33
-    needs:
-      - build-and-push-nexus
-      - scan
+  environment: lsa33
+  steps:
+    - name: Checkout
+      uses: cloudbees-io/checkout@v1
+    - uses: cashokannamalai/kubeconfig@v1
+      name: Set kubeconfig
+      with:
+        secname: ${{ secrets.kubeconfig }}
+    - id: install-chart
+      name: Install helm chart
+      uses: cloudbees-io/helm-install@v1
+      with:
+        chart-location: ${{ cloudbees.workspace }}/chart
+        release-name: ${{ env.APP_NAME }}
+        namespace: ${{ env.NAMESPACE }}
+        values: |
+          image:
+            repository: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
+            tag: ${{ cloudbees.scm.sha }}
+          fmKey: ${{ secrets.FM_TOKEN }}
+          hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
+    - name: Publish evidence
+      uses: cloudbees-io/publish-evidence-item@v1
+      with:
+        content: |-
+          ## Deployed environment
+          ✅ Application déployée avec succès!
+          [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
+          
+          Image Docker: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+        format: MARKDOWN
+    - name: Register deployed artifact
+      uses: cloudbees-io/register-deployed-artifact@v1
+      with:
+        name: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
+        version: ${{ cloudbees.scm.sha }}
+        url: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+        digest: ""
+        target-environment: lsa33
+  needs:
+    - build-and-push-nexus
+    - scan
+    

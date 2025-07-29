@@ -13,6 +13,7 @@ permissions:
 env:
   APP_NAME: hackers-organized
   NAMESPACE: lsa33
+  DOCKER_REPO: repository/unify-docker-lsa26
 jobs:
   test:
     outputs:
@@ -41,53 +42,54 @@ jobs:
             ## Test code coverage
             ${{ steps.RunUnitTest.outputs.CODE_COVERAGE }}
           format: MARKDOWN
-build-and-push-nexus:
-  steps:
-    - uses: cloudbees-io/checkout@v1
-      name: Get source code
-      kind: build
-      continue-on-error: true
-    
-    - name: Configure Docker registry credentials
-      uses: cloudbees-io/configure-oci-credentials@v1
-      with:
-        registry: ${{ secrets.NEXUS_URL_LSA26 }}
-        username: ${{ secrets.NEXUS_LOGIN_LSA26 }}
-        password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
-    
-    - name: Build and push Docker image
-      uses: cloudbees-io/kaniko@v1
-      with:
-        destination: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }},${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:latest
-        build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
-    
-    - name: Verify Docker image push
-      uses: docker://alpine:latest
-      run: |
-        apk add --no-cache curl
-        
-        echo "🔍 Vérification de l'image poussée..."
-        
-        # Enregistrer le chemin complet de l'image pour les étapes suivantes
-        FULL_IMAGE_PATH="${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}"
-        echo "Image complète: $FULL_IMAGE_PATH"
-        echo "$FULL_IMAGE_PATH" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
-    
-    - name: Publish evidence
-      uses: cloudbees-io/publish-evidence-item@v1
-      with:
-        content: |-
-          ## Built and pushed image to Nexus
+
+  build-and-push-nexus:
+    needs: test
+    steps:
+      - uses: cloudbees-io/checkout@v1
+        name: Get source code
+        kind: build
+        continue-on-error: true
+      
+      - name: Configure Docker registry credentials
+        uses: cloudbees-io/configure-oci-credentials@v1
+        with:
+          registry: ${{ secrets.NEXUS_URL_LSA26 }}
+          username: ${{ secrets.NEXUS_LOGIN_LSA26 }}
+          password: ${{ secrets.NEXUS_PASSWORD_LSA26 }}
+      
+      - name: Build and push Docker image
+        uses: cloudbees-io/kaniko@v1
+        with:
+          destination: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }},${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:latest
+          build-args: BUILDKIT_CONTEXT_KEEP_GIT_DIR=1,BUILDKIT_INLINE_CACHE=1
+      
+      - name: Verify Docker image push
+        uses: docker://alpine:latest
+        run: |
+          apk add --no-cache curl
           
-          Image Docker poussée avec succès:
+          echo "🔍 Vérification de l'image poussée..."
           
-          **Registry**: ${{ secrets.NEXUS_URL_LSA26 }}
-          **Repository**: ${{ env.DOCKER_REPO }}
-          **Image**: ${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-          
-          Image complète: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-        format: MARKDOWN
-      needs: test
+          # Enregistrer le chemin complet de l'image pour les étapes suivantes
+          FULL_IMAGE_PATH="${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}"
+          echo "Image complète: $FULL_IMAGE_PATH"
+          echo "$FULL_IMAGE_PATH" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
+      
+      - name: Publish evidence
+        uses: cloudbees-io/publish-evidence-item@v1
+        with:
+          content: |-
+            ## Built and pushed image to Nexus
+            
+            Image Docker poussée avec succès:
+            
+            **Registry**: ${{ secrets.NEXUS_URL_LSA26 }}
+            **Repository**: ${{ env.DOCKER_REPO }}
+            **Image**: ${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+            
+            Image complète: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+          format: MARKDOWN
 
   scan:
     outputs:
@@ -113,7 +115,7 @@ build-and-push-nexus:
           cover-file-name: coverage/clover.xml
           sonar-exclusion: tests/*
       - uses: cloudbees-io/snyk-sast-scan-code@v1
-        name: Synk SAST
+        name: Snyk SAST
         kind: scan
         continue-on-error: true
         with:
@@ -157,47 +159,47 @@ build-and-push-nexus:
             | MAJOR_COUNT          | ${{ steps.FetchSonarQubeIssues.outputs.MAJOR_COUNT }} |
             | MINOR_COUNT          | ${{ steps.FetchSonarQubeIssues.outputs.MINOR_COUNT }} |
           format: MARKDOWN
+
   deploy:
-  environment: lsa33
-  steps:
-    - name: Checkout
-      uses: cloudbees-io/checkout@v1
-    - uses: cashokannamalai/kubeconfig@v1
-      name: Set kubeconfig
-      with:
-        secname: ${{ secrets.kubeconfig }}
-    - id: install-chart
-      name: Install helm chart
-      uses: cloudbees-io/helm-install@v1
-      with:
-        chart-location: ${{ cloudbees.workspace }}/chart
-        release-name: ${{ env.APP_NAME }}
-        namespace: ${{ env.NAMESPACE }}
-        values: |
-          image:
-            repository: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
-            tag: ${{ cloudbees.scm.sha }}
-          fmKey: ${{ secrets.FM_TOKEN }}
-          hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
-    - name: Publish evidence
-      uses: cloudbees-io/publish-evidence-item@v1
-      with:
-        content: |-
-          ## Deployed environment
-          ✅ Application déployée avec succès!
-          [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
-          
-          Image Docker: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-        format: MARKDOWN
-    - name: Register deployed artifact
-      uses: cloudbees-io/register-deployed-artifact@v1
-      with:
-        name: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
-        version: ${{ cloudbees.scm.sha }}
-        url: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
-        digest: ""
-        target-environment: lsa33
-  needs:
-    - build-and-push-nexus
-    - scan
-    
+    environment: lsa33
+    needs:
+      - build-and-push-nexus
+      - scan
+    steps:
+      - name: Checkout
+        uses: cloudbees-io/checkout@v1
+      - uses: cashokannamalai/kubeconfig@v1
+        name: Set kubeconfig
+        with:
+          secname: ${{ secrets.kubeconfig }}
+      - id: install-chart
+        name: Install helm chart
+        uses: cloudbees-io/helm-install@v1
+        with:
+          chart-location: ${{ cloudbees.workspace }}/chart
+          release-name: ${{ env.APP_NAME }}
+          namespace: ${{ env.NAMESPACE }}
+          values: |
+            image:
+              repository: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
+              tag: ${{ cloudbees.scm.sha }}
+            fmKey: ${{ secrets.FM_TOKEN }}
+            hostname: ${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io
+      - name: Publish evidence
+        uses: cloudbees-io/publish-evidence-item@v1
+        with:
+          content: |-
+            ## Deployed environment
+            ✅ Application déployée avec succès!
+            [Production frontend](https://${{ env.APP_NAME }}-${{ env.NAMESPACE }}.preview.cb-demos.io/)
+            
+            Image Docker: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+          format: MARKDOWN
+      - name: Register deployed artifact
+        uses: cloudbees-io/register-deployed-artifact@v1
+        with:
+          name: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}
+          version: ${{ cloudbees.scm.sha }}
+          url: ${{ secrets.NEXUS_URL_LSA26 }}/${{ env.DOCKER_REPO }}/${{ env.APP_NAME }}:${{ cloudbees.scm.sha }}
+          digest: ""
+          target-environment: lsa33

@@ -1,0 +1,89 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: Nexus Registry Connectivity Test
+on:
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  test-connectivity:
+    steps:
+      - name: Check Registry Connectivity
+        uses: docker://alpine:latest
+        run: |
+          # Install network utilities
+          apk add --no-cache curl netcat-openbsd iputils
+
+          echo "===== CONNECTIVITY TEST REPORT ====="
+          echo ""
+          
+          # 1. Basic ping test (ICMP)
+          echo "🔍 Testing ICMP connectivity..."
+          HOST="nexus-repo-oss.demo.cbc.beescloud.com"
+          if ping -c 3 $HOST; then
+            echo "✅ Ping successful: The host $HOST is reachable via ICMP"
+          else
+            echo "⚠️ Ping failed: The host $HOST is not responding to ICMP"
+          fi
+          echo ""
+          
+          # 2. TCP port check using netcat
+          echo "🔍 Testing TCP connectivity to port 5002..."
+          if nc -zv $HOST 5002 -w 5; then
+            echo "✅ TCP connection successful: Port 5002 is open and accepting connections"
+          else
+            echo "❌ TCP connection failed: Could not connect to $HOST:5002"
+          fi
+          echo ""
+          
+          # 3. HTTP check using curl
+          echo "🔍 Testing HTTP connectivity..."
+          CURL_RESULT=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://$HOST:5002/v2/ || echo "TIMEOUT")
+          if [ "$CURL_RESULT" == "TIMEOUT" ]; then
+            echo "❌ HTTP connection timed out"
+          else
+            echo "✅ HTTP connection successful with status code: $CURL_RESULT"
+          fi
+          echo ""
+          
+          # 4. HTTPS check using curl
+          echo "🔍 Testing HTTPS connectivity..."
+          CURL_RESULT=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 https://$HOST:5002/v2/ || echo "TIMEOUT")
+          if [ "$CURL_RESULT" == "TIMEOUT" ]; then
+            echo "❌ HTTPS connection timed out"
+          else
+            echo "✅ HTTPS connection successful with status code: $CURL_RESULT"
+          fi
+          echo ""
+          
+          # 5. DNS resolution check
+          echo "🔍 Testing DNS resolution..."
+          if nslookup $HOST; then
+            echo "✅ DNS resolution successful"
+          else
+            echo "❌ DNS resolution failed"
+          fi
+          echo ""
+          
+          # 6. Display trace route to understand network path
+          echo "🔍 Tracing network route..."
+          tracepath $HOST
+          echo ""
+          
+          echo "===== END OF CONNECTIVITY TEST ====="
+
+      - name: Publish connectivity test results
+        uses: cloudbees-io/publish-evidence-item@v1
+        with:
+          content: |-
+            ## Nexus Registry Connectivity Test Results
+            
+            This test was run to check if CloudBees Automations can reach the Nexus repository at nexus-repo-oss.demo.cbc.beescloud.com:5002.
+            
+            The complete results are available in the step logs. These results will help determine if network connectivity issues are causing the OCI credential configuration timeout.
+            
+            ### Next Steps
+            
+            - If connectivity tests show the registry is unreachable, work with your network team to resolve access issues.
+            - If connectivity tests show the registry is reachable, investigate authentication methods or other configuration issues.
+            
+          format: MARKDOWN

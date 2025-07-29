@@ -95,9 +95,13 @@ jobs:
         id: push-to-nexus
         name: Push to Nexus via CURL
         run: |
+          # Utiliser bash explicitement pour la compatibilité
+          apk add --no-cache curl jq tar gzip coreutils bash
+          
+          # Exécuter avec bash
+          bash -c '
           # Ne pas arrêter immédiatement en cas d'erreur pour voir les messages d'erreur
           set +e
-          apk add --no-cache curl jq tar gzip coreutils
           
           USERNAME=lsa26
           PASSWORD=${{ secrets.NEXUS_PASSWORD_LSA26 }}
@@ -113,28 +117,40 @@ jobs:
           # Test de connexion à Nexus avec différents chemins
           echo "📡 Test des chemins API possibles..."
           
-          TEST_PATHS=(
-            "v2/"
-            "v2/_catalog"
-            "repository/v2/"
-            "v2/unify-docker-lsa26/"
-          )
-          
-          for path in "${TEST_PATHS[@]}"; do
-            echo "🔍 Test du chemin: https://$REGISTRY/$path"
-            RESPONSE=$(curl -s -f -u $USERNAME:$PASSWORD https://$REGISTRY/$path 2>&1)
-            if [ $? -eq 0 ]; then
-              echo "✅ Chemin valide: $path"
-              echo "$RESPONSE"
+          # Vérifier le chemin principal
+          echo "🔍 Test du chemin: https://$REGISTRY/$REPO_PATH/v2/"
+          if curl -s -f -u $USERNAME:$PASSWORD "https://$REGISTRY/$REPO_PATH/v2/" > /dev/null; then
+            echo "✅ Connexion réussie à $REGISTRY/$REPO_PATH/v2/"
+            API_PATH="$REPO_PATH/v2"
+          else
+            echo "❌ Échec de connexion à $REGISTRY/$REPO_PATH/v2/"
+            
+            # Essayer un autre chemin
+            echo "🔍 Test du chemin: https://$REGISTRY/v2/$REPO_PATH/"
+            if curl -s -f -u $USERNAME:$PASSWORD "https://$REGISTRY/v2/$REPO_PATH/" > /dev/null; then
+              echo "✅ Connexion réussie à $REGISTRY/v2/$REPO_PATH/"
+              API_PATH="v2/$REPO_PATH"
             else
-              echo "❌ Chemin invalide: $path"
+              echo "❌ Échec de connexion à $REGISTRY/v2/$REPO_PATH/"
+              
+              # Essayer encore un autre chemin
+              echo "🔍 Test du chemin: https://$REGISTRY/v2/"
+              if curl -s -f -u $USERNAME:$PASSWORD "https://$REGISTRY/v2/" > /dev/null; then
+                echo "✅ Connexion réussie à $REGISTRY/v2/"
+                API_PATH="v2"
+              else
+                echo "❌ Échec de connexion à tous les chemins API testés"
+                exit 1
+              fi
             fi
-          done
+          fi
+          
+          echo "✅ Utilisation du chemin API: $API_PATH"
           
           # Fonction pour calculer le digest SHA256
-          sha256_digest() { sha256sum "$1" | awk '{print $1}'; }
+          sha256_digest() { sha256sum "$1" | awk "{print \$1}"; }
           
-          # Fonction pour pousser un blob vers Nexus avec différents chemins possibles
+          # Fonction pour pousser un blob vers Nexus
           push_blob() {
             local FILE=$1
             local DIGEST=sha256:$(sha256_digest "$FILE")
@@ -142,59 +158,43 @@ jobs:
             
             # Vérifier si le fichier existe
             if [ ! -f "$FILE" ]; then
-              echo "❌ Erreur: Le fichier $FILE n'existe pas!"
+              echo "❌ Erreur: Le fichier $FILE nexiste pas!"
               ls -la
               return 1
             fi
             
             echo "📦 Taille du fichier: $(du -h "$FILE")"
             
-            # Essayer différents chemins d'API
-            local API_PATHS=(
-              "$REPO_PATH/v2/blobs/uploads/"
-              "v2/$REPO_PATH/blobs/uploads/"
-              "v2/unify-docker-lsa26/blobs/uploads/"
-            )
+            # Initialisation de l'upload
+            echo "🔄 Initialisation de l'upload pour $FILE..."
             
-            local success=false
+            # Essayer le chemin principal
+            INIT_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X POST "https://$REGISTRY/$API_PATH/blobs/uploads/" 2>&1)
+            echo "🔍 Réponse dinitialisation:"
+            echo "$INIT_RESPONSE"
             
-            for api_path in "${API_PATHS[@]}"; do
-              echo "🔄 Essai avec le chemin API: $api_path"
-              
-              # Initialisation de l'upload
-              local INIT_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X POST \
-                "https://$REGISTRY/$api_path" 2>&1)
-              
-              echo "🔍 Réponse d'initialisation:"
-              echo "$INIT_RESPONSE"
-              
-              # Chercher l'URL d'upload de différentes manières
-              local UPLOAD_URL=""
-              UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i "Location:" | head -1 | awk '{print $2}' | tr -d '\r')
-              
-              if [ -n "$UPLOAD_URL" ]; then
-                echo "🔗 URL d'upload trouvée: $UPLOAD_URL"
-                
-                # Upload du blob
-                echo "📤 Upload du blob..."
-                local UPLOAD_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT \
-                  "${UPLOAD_URL}&digest=$DIGEST" \
-                  --data-binary @"$FILE" 2>&1)
-                
-                echo "🔍 Réponse d'upload:"
-                echo "$UPLOAD_RESPONSE"
-                
-                # Vérifier si l'upload a réussi
-                if echo "$UPLOAD_RESPONSE" | grep -q "201 Created"; then
-                  echo "✅ Blob uploadé avec succès via $api_path"
-                  success=true
-                  break
-                fi
-              fi
-            done
+            # Extraire l'URL d'upload
+            UPLOAD_URL=$(echo "$INIT_RESPONSE" | grep -i "Location:" | head -1 | awk "{print \$2}" | tr -d "\r")
             
-            if [ "$success" != true ]; then
-              echo "❌ Échec de l'upload du blob après avoir essayé tous les chemins"
+            if [ -z "$UPLOAD_URL" ]; then
+              echo "❌ Impossible dobtenir lURL dupload"
+              return 1
+            fi
+            
+            echo "🔗 URL dupload obtenue: $UPLOAD_URL"
+            
+            # Upload du blob
+            echo "📤 Upload du blob..."
+            UPLOAD_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT "${UPLOAD_URL}&digest=$DIGEST" --data-binary @"$FILE" 2>&1)
+            
+            echo "🔍 Réponse dupload:"
+            echo "$UPLOAD_RESPONSE"
+            
+            # Vérifier si l'upload a réussi (code 201 Created)
+            if echo "$UPLOAD_RESPONSE" | grep -q "201 Created"; then
+              echo "✅ Blob uploadé avec succès"
+            else
+              echo "❌ Échec de lupload du blob"
               return 1
             fi
             
@@ -203,12 +203,12 @@ jobs:
           }
           
           # Pousser le fichier image.tar.gz
-          echo "🚀 Poussée de la couche d'image..."
+          echo "🚀 Poussée de la couche dimage..."
           IMAGE_LAYER_DIGEST=$(push_blob image.tar.gz)
           
           # Vérifier si le push a réussi
           if [ $? -ne 0 ]; then
-            echo "❌ Échec lors de la poussée de la couche d'image"
+            echo "❌ Échec lors de la poussée de la couche dimage"
             exit 1
           fi
           
@@ -251,67 +251,44 @@ jobs:
           
           echo "$MANIFEST_JSON" > manifest.json
           
-          # Essayer différents chemins pour pousser le manifest
-          API_PATHS=(
-            "$REPO_PATH/v2/manifests/${IMAGE_NAME}:${TAG}"
-            "v2/$REPO_PATH/manifests/${IMAGE_NAME}:${TAG}"
-            "v2/unify-docker-lsa26/manifests/${IMAGE_NAME}:${TAG}"
-          )
-          
-          success=false
-          
-          for api_path in "${API_PATHS[@]}"; do
-            echo "🔄 Essai d'envoi du manifest avec le chemin: $api_path"
+          # Pousser le manifest
+          echo "🚀 Envoi du manifest..."
+          MANIFEST_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT \
+            -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
+            --data-binary @manifest.json \
+            "https://$REGISTRY/$API_PATH/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
             
-            MANIFEST_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD -X PUT \
-              -H "Content-Type: application/vnd.docker.distribution.manifest.v2+json" \
-              --data-binary @manifest.json \
-              "https://$REGISTRY/$api_path" 2>&1)
-              
-            echo "🔍 Réponse du manifest:"
-            echo "$MANIFEST_RESPONSE"
-            
-            # Vérifier si l'envoi a réussi
-            if echo "$MANIFEST_RESPONSE" | grep -q "201 Created"; then
-              echo "✅ Manifest envoyé avec succès via $api_path"
-              success=true
-              
-              # Sauvegarder le chemin d'API qui a fonctionné
-              WORKING_API_PATH=$api_path
-              break
-            fi
-          done
+          echo "🔍 Réponse du manifest:"
+          echo "$MANIFEST_RESPONSE"
           
-          if [ "$success" != true ]; then
-            echo "❌ Échec de l'envoi du manifest après avoir essayé tous les chemins"
+          # Vérifier si le manifest a été envoyé avec succès
+          if echo "$MANIFEST_RESPONSE" | grep -q "201 Created"; then
+            echo "✅ Manifest envoyé avec succès"
+          else
+            echo "❌ Échec de lenvoi du manifest"
             exit 1
           fi
           
           # Vérifier si l'image a été correctement poussée
-          echo "🔍 Vérification de la présence de l'image..."
+          echo "🔍 Vérification de la présence de limage..."
           VERIFY_RESPONSE=$(curl -v -u $USERNAME:$PASSWORD \
-            "https://$REGISTRY/$WORKING_API_PATH" 2>&1)
-            
+            "https://$REGISTRY/$API_PATH/manifests/${IMAGE_NAME}:${TAG}" 2>&1)
+          
           echo "🔍 Réponse de vérification:"
           echo "$VERIFY_RESPONSE"
           
+          # Vérifier si l'image est accessible
           if echo "$VERIFY_RESPONSE" | grep -q "200 OK"; then
             echo "✅ Image trouvée après le push"
           else
             echo "⚠️ Image non confirmée après le push"
           fi
           
-          # Déterminer le chemin complet de l'image en fonction du chemin d'API qui a fonctionné
-          if [[ "$WORKING_API_PATH" == *"v2/unify-docker-lsa26"* ]]; then
-            FULL_IMAGE_PATH="$REGISTRY/unify-docker-lsa26/$IMAGE_NAME:$TAG"
-          elif [[ "$WORKING_API_PATH" == *"v2/$REPO_PATH"* ]]; then
-            FULL_IMAGE_PATH="$REGISTRY/$REPO_PATH/$IMAGE_NAME:$TAG"
-          else
-            FULL_IMAGE_PATH="$REGISTRY/$REPO_PATH/$IMAGE_NAME:$TAG"
-          fi
-          
-          echo "🏁 Image complète: $FULL_IMAGE_PATH"
+          # Sauvegarder le chemin complet de l'image
+          FULL_IMAGE_PATH="$REGISTRY/$REPO_PATH/$IMAGE_NAME:$TAG"
           echo "$FULL_IMAGE_PATH" > $CLOUDBEES_OUTPUTS/NEXUS_IMAGE
+          echo "✅ Terminé: $FULL_IMAGE_PATH"
+          '
       
       - name: Publish evidence
         uses: cloudbees-io/publish-evidence-item@v1
